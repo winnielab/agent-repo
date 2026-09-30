@@ -1,0 +1,25 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "repopilot"
+version = "0.1.0"
+description = "A provider-neutral single-agent coding harness"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = []
+
+[dependency-groups]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+repopilot = "repopilot.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["repopilot"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests", "agent-rep/tests"]
+pythonpath = [".", "agent-rep"]
+addopts = "-ra"
