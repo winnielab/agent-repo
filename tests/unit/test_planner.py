@@ -5,7 +5,7 @@ from repopilot.llm.scripted import ScriptedLLM
 from repopilot.observability.events import EventBus
 from repopilot.observability.usage import UsageTracker
 from repopilot.planning.planner import Planner
-from repopilot.repo.explorer import RepositoryContext
+from repopilot.repo.explorer import RepositoryContext, RepositoryObservation
 from repopilot.task.specification import BehaviorCase, TaskSpecification
 
 
@@ -106,6 +106,9 @@ def test_planner_requires_causal_contract_and_behavior_coverage() -> None:
       "summary":"repair normalization",
       "root_cause_hypothesis":"userinfo is lost while normalizing the URL",
       "earliest_invariant":"normalization preserves parsed userinfo",
+      "hypothesis_checks":[{"key":"trace-userinfo","claim":"normalization drops userinfo",
+        "falsification":"trace a URL with userinfo through normalization and reject the claim if it survives",
+        "evidence_keys":[]}],
       "steps":[{"key":"implementation","title":"Fix normalization",
         "description":"Preserve URL components at the normalization boundary",
         "dependencies":[],"behavior_keys":["missing_scheme","has_scheme"]}]
@@ -139,3 +142,61 @@ def test_planner_falls_back_when_behavior_case_is_uncovered() -> None:
 
     assert plan.steps[0].behavior_keys == ["negative_case"]
     assert "earliest" in plan.summary.casefold()
+
+
+def test_planner_cites_task_focused_repository_evidence() -> None:
+    scoped = TaskSpecification(
+        "Fix parser", "Preserve state when parsing fails", ["Behavior works", "Tests pass"], [],
+        [BehaviorCase(
+            "failure_state", "parsing fails", "the original error propagates", "public API unchanged",
+            "failure_path", "parser state is initialized before the error",
+        )],
+    )
+    repository = RepositoryContext(
+        "python", important_files=["parser.py"], structure_summary="parser",
+        observations=[RepositoryObservation(
+            "parser_definition", "definition", "parser.py", 10, "parse", "mutates parser state",
+        )],
+    )
+    llm = ScriptedLLM([LLMResponse(text='''{
+      "summary":"repair parser state transition",
+      "root_cause_hypothesis":"state is initialized after the fallible conversion",
+      "earliest_invariant":"state exists before conversion can fail",
+      "impact_surface":["parse failure state","original exception"],
+      "hypothesis_checks":[{"key":"trace-failure-state",
+        "claim":"the conversion can fail before state initialization",
+        "falsification":"trace the failure branch and reject the claim if state is initialized first",
+        "evidence_keys":["parser_definition"]}],
+      "steps":[{"key":"implementation","title":"Move state initialization",
+        "description":"Initialize state at the parser boundary","dependencies":[],
+        "behavior_keys":["failure_state"],"evidence_keys":["parser_definition"]}]
+    }''')])
+
+    plan = asyncio.run(Planner(llm, EventBus("run"), UsageTracker()).create_plan(
+        scoped, repository,
+    ))
+
+    assert plan.steps[0].evidence_keys == ["parser_definition"]
+    assert plan.impact_surface == ["parse failure state", "original exception"]
+    assert plan.hypothesis_checks[0].key == "trace-failure-state"
+
+
+def test_behavior_plan_requires_a_falsifiable_hypothesis_check() -> None:
+    scoped = TaskSpecification(
+        "Fix parser", "Preserve state when parsing fails", ["Behavior works"], [],
+        [BehaviorCase("failure_state", "parsing fails", "state is preserved")],
+    )
+    llm = ScriptedLLM([LLMResponse(text='''{
+      "summary":"missing check",
+      "root_cause_hypothesis":"state is lost",
+      "earliest_invariant":"state is preserved",
+      "steps":[{"key":"implementation","title":"Fix","description":"Fix state",
+        "dependencies":[],"behavior_keys":["failure_state"]}]
+    }''')])
+
+    plan = asyncio.run(Planner(llm, EventBus("run"), UsageTracker()).create_plan(
+        scoped, RepositoryContext("python"),
+    ))
+
+    assert plan.steps[0].key == "implement"
+    assert plan.hypothesis_checks[0].falsification

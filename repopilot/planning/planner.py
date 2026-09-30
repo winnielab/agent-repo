@@ -11,7 +11,7 @@ from repopilot.core.structured import parse_json_object
 from repopilot.llm.base import LLMClient
 from repopilot.observability.events import EventBus
 from repopilot.observability.usage import UsageTracker
-from repopilot.planning.plan import Plan, PlanStep
+from repopilot.planning.plan import HypothesisCheck, Plan, PlanStep
 from repopilot.repo.explorer import RepositoryContext
 from repopilot.task.intent import requests_test_changes
 from repopilot.task.specification import TaskSpecification
@@ -24,8 +24,16 @@ class Planner:
         self.usage = usage
 
     @staticmethod
-    def fallback(specification: TaskSpecification) -> Plan:
+    def fallback(specification: TaskSpecification,
+                 repository: Optional[RepositoryContext] = None) -> Plan:
         behavior_keys = [item.key for item in specification.behavior_cases]
+        evidence_keys = [item.key for item in (repository.observations if repository else [])]
+        impact_surface = list(dict.fromkeys(
+            value
+            for item in specification.behavior_cases
+            for value in (item.must_preserve, item.state_effect)
+            if value.strip()
+        ))
         return Plan(
             "Trace the issue-described behavior to the earliest violated invariant, then implement one focused fix.",
             [PlanStep(
@@ -34,9 +42,17 @@ class Planner:
                 specification.description,
                 [],
                 behavior_keys,
+                evidence_keys,
             )],
             "The defect is in the earliest repository control-flow or data-normalization point that contradicts the issue.",
             "Issue-described inputs must retain their required meaning before downstream formatting, adaptation, or output.",
+            impact_surface,
+            [HypothesisCheck(
+                "trace-earliest-violation",
+                "The proposed earliest invariant is the first point that contradicts the requested behavior.",
+                "Trace one issue-described input through the definition, a caller or state transition, and the observable output; use a focused read-only probe when source semantics are ambiguous, and reject the claim if an earlier divergence appears.",
+                evidence_keys,
+            )] if behavior_keys else [],
         )
 
     @staticmethod
@@ -111,6 +127,7 @@ class Planner:
                 step.description,
                 list(dict.fromkeys(dependencies)),
                 step.behavior_keys,
+                step.evidence_keys,
             ))
         if not normalized:
             raise ValueError("plan contains no implementation task")
@@ -126,15 +143,23 @@ class Planner:
                 "summary": "string",
                 "root_cause_hypothesis": "causal explanation grounded in repository evidence",
                 "earliest_invariant": "earliest data/control-flow property that the fix must restore",
+                "impact_surface": ["public behavior, state, caller, or failure path that must remain compatible"],
+                "hypothesis_checks": [{
+                    "key": "short-unique-key",
+                    "claim": "a material root-cause assumption",
+                    "falsification": "specific source trace or focused read-only probe that could disprove it",
+                    "evidence_keys": ["repository observation keys supporting the check"],
+                }],
                 "steps": [{"key": "short-unique-key", "title": "string",
                            "description": "actionable coding task", "dependencies": ["earlier-key"],
-                           "behavior_keys": ["behavior case keys covered by this step"]}],
+                           "behavior_keys": ["behavior case keys covered by this step"],
+                           "evidence_keys": ["repository observation keys supporting this step"]}],
             },
         }
         self.event_bus.emit("planning_started")
         try:
             response = await self.llm.generate([
-                Message("system", "Create a small executable coding plan. Return JSON only. State a repository-grounded root_cause_hypothesis and the earliest_invariant whose first violation explains the behavior; prefer fixing that earliest point over a late output-layer workaround. Map every supplied behavior case key to at least one implementation step. Plan implementation work, plus test-writing only when the issue explicitly requests tests or coverage. Never modify tests merely to prove a fix. The workflow runs the configured suite after all workers, so never create a standalone run/verify/check step. Treat positive, negative, temporal/version, and preservation requirements literally. Prefer the narrowest behavior change, never add input-specific branches merely to satisfy examples, and never broaden exception handling or public API behavior unless explicitly required. Every dependency/framework symbol used by the plan must be verifiable in the current checkout."),
+                Message("system", "Create a small executable coding plan. Return JSON only. State a repository-grounded root_cause_hypothesis and the earliest_invariant whose first violation explains the behavior; prefer fixing that earliest point over a late output-layer workaround. For every behavior-aware plan, add at least one hypothesis_check naming a material claim and a concrete source trace or focused read-only probe that could disprove it. A check must be capable of changing the implementation plan; repeating the claim is not falsification. Cite repository observation keys for implementation claims and checks, and list the impact_surface that must remain compatible, including callers, state transitions, and failure paths supported by the evidence. Map every supplied behavior case key to at least one implementation step. Plan implementation work, plus test-writing only when the issue explicitly requests tests or coverage. Never modify tests merely to prove a fix. The workflow runs the configured suite after all workers, so never create a standalone run/verify/check step. Treat positive, negative, temporal/version, preservation, and state-effect requirements literally. Prefer the narrowest behavior change, never add input-specific branches merely to satisfy examples, and never broaden exception handling or public API behavior unless explicitly required. Every dependency/framework symbol used by the plan must be verifiable in the current checkout."),
                 Message("user", json.dumps(payload, ensure_ascii=False)),
             ])
             self.usage.add_usage(response.usage)
@@ -144,22 +169,34 @@ class Planner:
                 description=str(item["description"]).strip(),
                 dependencies=[str(dep).strip() for dep in item.get("dependencies", [])],
                 behavior_keys=[str(key).strip() for key in item.get("behavior_keys", [])],
+                evidence_keys=[str(key).strip() for key in item.get("evidence_keys", [])],
             ) for item in data["steps"]]
             steps = self._without_nonimplementation_steps(
                 steps,
                 allow_test_changes=self._requests_test_changes(specification),
             )
+            checks = [HypothesisCheck(
+                key=str(item["key"]).strip(),
+                claim=str(item["claim"]).strip(),
+                falsification=str(item["falsification"]).strip(),
+                evidence_keys=[str(key).strip() for key in item.get("evidence_keys", [])],
+            ) for item in data.get("hypothesis_checks", [])]
             plan = Plan(
                 str(data["summary"]).strip(),
                 steps,
                 str(data.get("root_cause_hypothesis", "")).strip(),
                 str(data.get("earliest_invariant", "")).strip(),
+                [str(item).strip() for item in data.get("impact_surface", []) if str(item).strip()],
+                checks,
             )
-            plan.validate(item.key for item in specification.behavior_cases)
+            plan.validate(
+                (item.key for item in specification.behavior_cases),
+                (item.key for item in repository.observations),
+            )
             self.event_bus.emit("planning_finished", fallback=False, steps=len(steps))
             return plan
         except Exception as exc:
-            plan = self.fallback(specification)
+            plan = self.fallback(specification, repository)
             self.event_bus.emit("planning_finished", fallback=True, steps=1,
                                 error=f"{type(exc).__name__}: {exc}")
             return plan

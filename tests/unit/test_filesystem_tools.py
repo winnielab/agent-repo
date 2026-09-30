@@ -64,3 +64,30 @@ def test_delete_file_removes_only_regular_workspace_file(tmp_path) -> None:
     refused = asyncio.run(registry.execute(ToolCall("2", "delete_file", {"path": "folder"}), context(tmp_path)))
     assert deleted.ok and not (tmp_path / "temporary.py").exists()
     assert not refused.ok and (tmp_path / "folder").is_dir()
+
+
+def test_editing_tools_enforce_task_test_change_contract(tmp_path) -> None:
+    (tmp_path / "tests").mkdir()
+    test_file = tmp_path / "tests" / "test_behavior.py"
+    test_file.write_text("assert behavior()\n", encoding="utf-8")
+    registry = ToolRegistry([WriteFileTool(), EditFileTool(), DeleteFileTool()])
+    ctx = context(tmp_path)
+    ctx.values["allow_test_changes"] = False
+
+    edited = asyncio.run(registry.execute(ToolCall("1", "edit_file", {
+        "path": "tests/test_behavior.py",
+        "old_text": "assert behavior()",
+        "new_text": "assert True",
+    }), ctx))
+    written = asyncio.run(registry.execute(ToolCall("2", "write_file", {
+        "path": "test_new_behavior.py", "content": "assert True\n",
+    }), ctx))
+    deleted = asyncio.run(registry.execute(ToolCall("3", "delete_file", {
+        "path": "tests/test_behavior.py",
+    }), ctx))
+
+    assert {edited.error_code, written.error_code, deleted.error_code} == {
+        "test_change_not_allowed",
+    }
+    assert test_file.read_text(encoding="utf-8") == "assert behavior()\n"
+    assert not (tmp_path / "test_new_behavior.py").exists()

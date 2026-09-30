@@ -39,6 +39,7 @@ class SearchCodeTool:
         limit = min(int(arguments.get("max_matches", 100)), 500)
         candidates = [root] if root.is_file() else root.rglob("*")
         matches = []
+        matched_files = []
         for path in candidates:
             if not path.is_file():
                 continue
@@ -56,7 +57,17 @@ class SearchCodeTool:
             for line_number, line in enumerate(lines, 1):
                 if matcher.search(line):
                     matches.append(f"{relative.as_posix()}:{line_number}:{line[:500]}")
+                    relative_text = relative.as_posix()
+                    if relative_text not in matched_files:
+                        matched_files.append(relative_text)
                     if len(matches) >= limit:
+                        observed = context.values.setdefault("searched_files", [])
+                        for item in matched_files:
+                            if item not in observed and len(observed) < 200:
+                                observed.append(item)
                         return ToolResult(True, "\n".join(matches), {"matches": len(matches), "truncated": True})
+        observed = context.values.setdefault("searched_files", [])
+        for item in matched_files:
+            if item not in observed and len(observed) < 200:
+                observed.append(item)
         return ToolResult(True, "\n".join(matches) if matches else "(no matches)", {"matches": len(matches)})
-

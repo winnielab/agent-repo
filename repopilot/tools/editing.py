@@ -6,7 +6,22 @@ from typing import Any, Dict
 
 from repopilot.core.models import ToolResult
 from repopilot.execution.paths import safe_workspace_path
+from repopilot.task.intent import is_test_path
 from repopilot.tools.base import ToolContext, function_schema
+
+
+def _test_change_guard(path: str, context: ToolContext) -> ToolResult | None:
+    if context.values.get("allow_test_changes", True) or not is_test_path(path):
+        return None
+    return ToolResult(
+        False,
+        (
+            f"Test artifact changes are outside this task contract: {path}. "
+            "Fix production behavior and use the configured suite as evidence."
+        ),
+        {"path": path},
+        "test_change_not_allowed",
+    )
 
 
 class WriteFileTool:
@@ -22,7 +37,11 @@ class WriteFileTool:
         })
 
     async def execute(self, arguments: Dict[str, Any], context: ToolContext) -> ToolResult:
-        path = safe_workspace_path(context.workspace, str(arguments["path"]))
+        relative_input = str(arguments["path"])
+        guard = _test_change_guard(relative_input, context)
+        if guard:
+            return guard
+        path = safe_workspace_path(context.workspace, relative_input)
         content = arguments["content"]
         if not isinstance(content, str):
             raise TypeError("content must be a string")
@@ -52,7 +71,11 @@ class EditFileTool:
         })
 
     async def execute(self, arguments: Dict[str, Any], context: ToolContext) -> ToolResult:
-        path = safe_workspace_path(context.workspace, str(arguments["path"]), must_exist=True)
+        relative_input = str(arguments["path"])
+        guard = _test_change_guard(relative_input, context)
+        if guard:
+            return guard
+        path = safe_workspace_path(context.workspace, relative_input, must_exist=True)
         old_text, new_text = arguments["old_text"], arguments["new_text"]
         if not isinstance(old_text, str) or not isinstance(new_text, str) or not old_text:
             raise ValueError("old_text must be non-empty and both values must be strings")
@@ -86,7 +109,11 @@ class DeleteFileTool:
         })
 
     async def execute(self, arguments: Dict[str, Any], context: ToolContext) -> ToolResult:
-        path = safe_workspace_path(context.workspace, str(arguments["path"]), must_exist=True)
+        relative_input = str(arguments["path"])
+        guard = _test_change_guard(relative_input, context)
+        if guard:
+            return guard
+        path = safe_workspace_path(context.workspace, relative_input, must_exist=True)
         if not path.is_file() or path.is_symlink():
             return ToolResult(False, f"Refusing to delete a non-regular file: {arguments['path']}",
                               error_code="not_regular_file")

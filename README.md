@@ -65,16 +65,34 @@ replaced.
 ```text
 CLI → SolveIssueWorkflow
           ├── TaskAnalyzer → TaskSpecification
-          │                    └── BehaviorContract (scenario/expected/preserve)
-          ├── RepositoryExplorer (read-only AgentRuntime)
-          ├── Planner → causal hypothesis + earliest invariant → persisted TaskGraph
+          │                    └── BehaviorContract
+          │                        (positive/negative/boundary/temporal/
+          │                         preservation/failure-path + state effect)
+          ├── RepositoryExplorer (bounded, read-only AgentRuntime)
+          │                    └── task-adaptive evidence slice
+          │                        (instructions → definitions → callers/state → tests)
+          ├── Planner → cited evidence + falsifiable hypotheses + impact surface
+          │                                             └── persisted TaskGraph
           ├── CoderWorker → AgentRuntime → tools/environment/worktree
-          ├── PRReviewAdapter → existing pr_review_agent
-          └── GoalEvaluator + SourceContractGuard → counterexample-driven RepairLoop
+          ├── PRReviewAdapter → existing pr_review_agent (reuses authoritative test)
+          └── GoalEvaluator + SourceContractGuard + PatchHygieneGuard
+                                   └── counterexample-driven RepairLoop
 ```
 
 Concrete providers and tools are assembled only in the workflow. The runtime
 does not import them, and the Coder owns only a prompt and a tool allowlist.
+Repository comprehension is progressive rather than a full-repository dump:
+the Explorer records verifiable observations and the Planner must cite those
+observation keys. Read-only exploration has independent iteration, tool-call,
+and token ceilings so implementation and finalization retain their budgets.
+Behavior-aware plans must also state a material root-cause claim and a source
+trace or focused read-only probe capable of disproving it. The Coder performs
+that check before editing, command output becomes evaluator evidence, and an
+unsupported or contradicted hypothesis is returned to the repair loop instead
+of being treated as an implementation fact.
+Unless the issue explicitly requests tests, editing tools reject writes to test
+paths before mutation; final patch hygiene also rejects debug/reproduction
+artifacts and unrequested test changes.
 
 ## Verification
 
@@ -99,4 +117,7 @@ and [the Stage 2 implementation report](docs/RepoPilot_Stage2_实现与验证.md
 for module boundaries, event contracts, benchmark results, and current gate status.
 Development failures, root causes, fixes, diagnostic reruns, and the frozen-suite
 continuation protocol are tracked in
-[the development issue log](docs/RepoPilot_开发问题与修复记录.md).
+[the development issue log](docs/RepoPilot_开发问题与修复记录.md). The task-adaptive
+repository-comprehension design and the path-verified v6 failed-PR regression
+are documented in
+[the comprehension regression report](docs/RepoPilot_项目理解与失败PR回归_20260930.md).

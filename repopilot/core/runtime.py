@@ -27,6 +27,7 @@ class RuntimeLimits:
     max_runtime_seconds: float = 120.0
     max_post_test_iterations: int = 1
     max_no_mutation_iterations: int = 0
+    max_readonly_iterations: int = 0
 
 
 class AgentRuntime:
@@ -61,16 +62,35 @@ class AgentRuntime:
         successful_test_iteration: Optional[int] = None
         mutation_seen = False
         mutation_reminders = 0
+        readonly_reminder = False
         completion_deferred = False
         last_input_tokens = 0
         mutation_tools = {"write_file", "edit_file", "delete_file"}
         coding_agent = bool(mutation_tools.intersection(agent.tool_names))
+        readonly_agent = bool(agent.tool_names) and not coding_agent
         self.event_bus.emit("agent_loop_started", agent=agent.name, task=task.description)
         # Benchmark-compatible lifecycle name.
         self.event_bus.emit("agent_started", agent=agent.name, workspace=str(tool_context.workspace))
         try:
             while True:
                 elapsed = time.monotonic() - started
+                readonly_checkpoint = bool(
+                    readonly_agent
+                    and self.limits.max_readonly_iterations
+                    and iterations >= self.limits.max_readonly_iterations
+                )
+                if readonly_checkpoint and not readonly_reminder:
+                    context.add_observation(
+                        "Read-only exploration checkpoint: synthesize the required final result now "
+                        "from the evidence already collected. Do not request another tool. Mark any "
+                        "unestablished relation as unknown instead of expanding the repository scan."
+                    )
+                    readonly_reminder = True
+                    self.event_bus.emit(
+                        "agent_readonly_finalize_requested",
+                        iterations=iterations,
+                        threshold=self.limits.max_readonly_iterations,
+                    )
                 if (coding_agent and not mutation_seen and self.limits.max_no_mutation_iterations
                         and iterations >= self.limits.max_no_mutation_iterations
                         and mutation_reminders == 0):
@@ -165,8 +185,11 @@ class AgentRuntime:
                     )
                 )
                 active_tool_names = (
-                    [name for name in agent.tool_names if name in mutation_tools]
-                    if mutation_checkpoint else agent.tool_names
+                    []
+                    if readonly_checkpoint
+                    else [name for name in agent.tool_names if name in mutation_tools]
+                    if mutation_checkpoint
+                    else agent.tool_names
                 )
                 schemas = self.registry.schemas(active_tool_names) if active_tool_names else []
                 if mutation_checkpoint:
@@ -175,6 +198,13 @@ class AgentRuntime:
                         iterations=iterations,
                         tools=active_tool_names,
                         reason="mutation_checkpoint",
+                    )
+                elif readonly_checkpoint:
+                    self.event_bus.emit(
+                        "agent_tools_restricted",
+                        iterations=iterations,
+                        tools=[],
+                        reason="readonly_finalize_checkpoint",
                     )
                 iteration = iterations + 1
                 await self.hooks.run(HookEvent.BEFORE_LLM_CALL, iteration=iteration, messages=messages)
@@ -233,6 +263,11 @@ class AgentRuntime:
                             "repository change with edit_file/write_file/delete_file."
                             if mutation_checkpoint else ""
                         )
+                        if readonly_checkpoint:
+                            checkpoint_guidance = (
+                                " The read-only exploration budget is exhausted; return the required "
+                                "structured final result from existing evidence without another tool."
+                            )
                         result = ToolResult(False, f"Tool is not available to agent {agent.name}: {call.name}",
                                             error_code="tool_not_allowed")
                         if checkpoint_guidance:

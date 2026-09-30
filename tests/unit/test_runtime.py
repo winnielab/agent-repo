@@ -227,3 +227,32 @@ def test_runtime_defers_empty_patch_completion_once(tmp_path) -> None:
     assert result.iterations == 3
     assert any(event["event_type"] == "agent_empty_patch_completion_deferred"
                for event in memory.events)
+
+
+def test_runtime_forces_readonly_agent_to_synthesize_after_bounded_exploration(tmp_path) -> None:
+    llm = ScriptedLLM([
+        LLMResponse(tool_calls=[ToolCall("1", "echo", {})]),
+        LLMResponse(tool_calls=[ToolCall("2", "echo", {})]),
+        LLMResponse(text='{"result":"bounded evidence"}'),
+    ])
+    memory = MemorySubscriber()
+    bus = EventBus("run", [memory])
+    task = AgentTask("inspect relevant repository slice")
+    context = ContextManager("system", task, tmp_path, bus)
+    result = asyncio.run(AgentRuntime(
+        llm, ToolRegistry([EchoTool()]), AllowAll(tmp_path), bus,
+        limits=RuntimeLimits(
+            4, 10, 1000, 10,
+            max_readonly_iterations=2,
+        ),
+    ).run(
+        Agent("explorer", "system", ["echo"]), task, context,
+        ToolContext(tmp_path, LocalEnvironment(tmp_path), "run", bus),
+    ))
+
+    assert result.status == "completed"
+    assert llm.requests[2][1] == []
+    assert any("Read-only exploration checkpoint" in message.content
+               for message in llm.requests[2][0])
+    assert any(event["event_type"] == "agent_readonly_finalize_requested"
+               for event in memory.events)

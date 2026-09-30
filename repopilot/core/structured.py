@@ -13,11 +13,14 @@ def parse_json_object(text: str) -> Dict[str, Any]:
     if fenced:
         candidate = fenced.group(1)
     else:
-        start, end = candidate.find("{"), candidate.rfind("}")
-        if start >= 0 and end >= start:
-            candidate = candidate[start:end + 1]
-    value = json.loads(candidate)
+        start = candidate.find("{")
+        if start >= 0:
+            candidate = candidate[start:]
+    # Model providers occasionally append a second object or prose note even
+    # when asked for JSON only. Decode exactly the first complete object rather
+    # than expanding from the first opening brace to the final closing brace.
+    # Caller-level schema validation remains the semantic boundary.
+    value, _end = json.JSONDecoder().raw_decode(candidate)
     if not isinstance(value, dict):
         raise ValueError("structured response must be a JSON object")
     return value
-

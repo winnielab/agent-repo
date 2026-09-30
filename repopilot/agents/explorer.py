@@ -7,7 +7,6 @@ class ExplorerAgent(Agent):
     def __init__(self) -> None:
         super().__init__(
             "explorer",
-            "Inspect the repository with read-only tools. Return JSON only with language, frameworks, test_command, important_files, structure_summary, and build_system. Do not propose or make edits.",
+            "Inspect the repository with read-only tools using progressive disclosure. The task, not the whole repository, determines what to read. Locate project instruction files, task terms or symbols, their definitions, one relevant caller/consumer or state read/write path, and adjacent tests when they exist. Return JSON only with language, frameworks, test_command, important_files, structure_summary, build_system, target_symbols, implementation_files, test_files, instruction_files, and observations. Each observation must contain a unique key, kind (instruction|definition|caller|state|test|dependency), a real path and 1-based line previously observed through a tool, plus optional symbol and concise detail. Keep at most 16 observations. Do not propose or make edits and do not scan unrelated subsystems.",
             ["glob", "read_file", "search_code", "git_status"],
         )
-

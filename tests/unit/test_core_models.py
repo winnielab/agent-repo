@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 from repopilot.core.models import LLMResponse, Message, ToolCall, Usage, json_safe
+from repopilot.core.structured import parse_json_object
 
 
 def test_models_are_json_safe() -> None:
@@ -18,3 +19,11 @@ def test_message_keeps_native_tool_protocol_fields() -> None:
     message = Message("tool", "done", tool_call_id="call-1")
     assert json_safe(message)["tool_call_id"] == "call-1"
 
+
+def test_structured_parser_accepts_first_complete_object_with_provider_tail() -> None:
+    value = parse_json_object(
+        'analysis prefix\n{"criteria":[{"status":"pass"}]}\n'
+        '{"provider_note":"duplicate trailing object"}'
+    )
+
+    assert value == {"criteria": [{"status": "pass"}]}

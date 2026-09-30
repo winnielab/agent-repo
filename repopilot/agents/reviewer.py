@@ -25,6 +25,7 @@ class ReviewInput(Serializable):
     diff: str
     test_result: Dict[str, Any]
     test_command: str
+    test_timeout_seconds: float = 180.0
 
 
 @dataclass(frozen=True)
@@ -92,7 +93,10 @@ class PRReviewAdapter:
             ReviewAgent = self._review_agent_class()
             payload = ReviewAgent(
                 repo=repo, base="HEAD~1", target="HEAD", pr_description=description,
-                test_command=review_input.test_command, language="en", mode=self.mode,
+                test_command=review_input.test_command,
+                test_result=review_input.test_result,
+                test_timeout=max(1, int(review_input.test_timeout_seconds)),
+                language="en", mode=self.mode,
                 critic_pass=False, llm_provider="none", disable_company_rag=True,
             ).run()
             self.artifact_dir.mkdir(parents=True, exist_ok=True)
@@ -103,7 +107,7 @@ class PRReviewAdapter:
                     destination = self.artifact_dir / f"pr-review-{source_path.name}"
                     shutil.copy2(source_path, destination)
                     copied[name] = str(destination)
-            return {**payload, "paths": copied}
+            return {**payload, "paths": copied, "test_evidence_source": "precomputed"}
 
     def review(self, review_input: ReviewInput) -> ReviewResult:
         payload = self.runner(review_input) if self.runner else self._legacy_run(review_input)
@@ -137,4 +141,5 @@ class PRReviewAdapter:
         return ReviewResult(decision, issues, [issue.suggestion for issue in issues if issue.suggestion],
                             {"legacy_verdict": verdict, "paths": payload.get("paths", {}),
                              "summary": payload.get("summary", ""),
+                             "test_evidence_source": payload.get("test_evidence_source", "runner"),
                              "suppressed_findings": [item.to_dict() for item in suppressed]})

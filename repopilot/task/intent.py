@@ -24,6 +24,15 @@ _POSITIVE_TEST_CHANGE_PATTERNS = (
     r"(?:新增|添加|编写|修改|更新|补充).{0,20}(?:测试|覆盖率)",
     r"(?:测试|覆盖率).{0,20}(?:需要|要求|应当|必须).{0,10}(?:新增|添加|编写|修改|更新|补充)",
 )
+_TEST_PATH = re.compile(
+    r"(?:^|/)(?:tests?|testing)(?:/|$)|(?:^|/)(?:test_[^/]+|[^/]+_test)\.[A-Za-z0-9]+$",
+    re.IGNORECASE,
+)
+
+
+def is_test_path(path: str) -> bool:
+    """Classify conventional test artifacts without repository-specific rules."""
+    return bool(_TEST_PATH.search(path.replace("\\", "/")))
 
 
 def requests_test_changes(specification: TaskSpecification) -> bool:

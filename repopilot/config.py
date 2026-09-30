@@ -15,6 +15,9 @@ class RepoPilotConfig:
     evaluation_token_reserve: int = 20_000
     max_post_test_iterations: int = 1
     max_no_mutation_iterations: int = 8
+    max_explorer_iterations: int = 12
+    max_explorer_tool_calls: int = 40
+    max_explorer_tokens: int = 120_000
     execution_image: Optional[str] = None
     execution_platform: Optional[str] = None
     execution_setup_command: str = ""
@@ -42,6 +45,9 @@ class RepoPilotConfig:
             "max_iterations": self.max_iterations,
             "max_tool_calls": self.max_tool_calls,
             "max_tokens": self.max_tokens,
+            "max_explorer_iterations": self.max_explorer_iterations,
+            "max_explorer_tool_calls": self.max_explorer_tool_calls,
+            "max_explorer_tokens": self.max_explorer_tokens,
             "max_runtime_seconds": self.max_runtime_seconds,
             "command_timeout_seconds": self.command_timeout_seconds,
             "context_char_budget": self.context_char_budget,

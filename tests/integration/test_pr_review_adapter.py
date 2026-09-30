@@ -39,3 +39,4 @@ def test_adapter_runs_existing_pr_agent_and_copies_reports(tmp_path) -> None:
     assert copied
     assert all((tmp_path / "review-artifacts") in Path(path).parents for path in copied.values())
     assert all(Path(path).is_file() for path in copied.values())
+    assert result.raw_artifacts["test_evidence_source"] == "precomputed"

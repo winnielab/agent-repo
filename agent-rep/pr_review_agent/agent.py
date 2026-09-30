@@ -48,6 +48,8 @@ class ReviewAgent:
         embedding_model: str = "text-embedding-v4",
         embedding_dimensions: int = 1024,
         disable_company_rag: bool = False,
+        test_result: dict[str, Any] | None = None,
+        test_timeout: int = 180,
     ):
         self.repo = repo.resolve()
         self.base = base
@@ -66,6 +68,8 @@ class ReviewAgent:
         self.embedding_model = embedding_model
         self.embedding_dimensions = embedding_dimensions
         self.disable_company_rag = disable_company_rag
+        self.precomputed_test_result = test_result
+        self.test_timeout = max(1, int(test_timeout))
         self.output_dir = self.repo / OUTPUT_DIR_NAME
         self.transcript = Transcript(self.output_dir / TRANSCRIPT_NAME)
         self.collector = FindingCollector()
@@ -76,7 +80,10 @@ class ReviewAgent:
         if self.loaded_env_keys:
             self.transcript.emit("env.load", path=".env", keys=self.loaded_env_keys)
         self.company_kb = self._build_company_kb()
-        self.tools = ReviewTools(self.repo, self.base, self.target, self.transcript, self.company_kb)
+        self.tools = ReviewTools(
+            self.repo, self.base, self.target, self.transcript, self.company_kb,
+            test_timeout=self.test_timeout,
+        )
         self.llm_client = self._build_llm_client()
         self.reviewers = SpecialtyReviewers(self.tools, self.collector, self.transcript)
         self.council_result: dict[str, Any] = {"findings": [], "messages": []}
@@ -201,7 +208,11 @@ class ReviewAgent:
         else:
             files = self.tools.changed_files()
             diff = self.tools.git_diff()
-            test_result = self.tools.run_tests(self.test_command) if self.test_command else None
+            test_result = (
+                self.precomputed_test_result
+                if self.precomputed_test_result is not None
+                else self.tools.run_tests(self.test_command) if self.test_command else None
+            )
             self.skill_context = self._augment_skill_context(
                 skill,
                 "\n".join([pr_description, json.dumps(files, ensure_ascii=False), truncate(diff, 12000)]),

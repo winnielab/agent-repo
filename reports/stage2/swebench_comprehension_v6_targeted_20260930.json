@@ -1,0 +1,115 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-09-30T15:55:00Z",
+  "purpose": "Resume the saved checkpoint, create a path-verified Agent freeze, and rerun three previously unresolved SWE-bench Verified tasks that exercise temporal intent, formatting semantics, and causal tracing.",
+  "scientific_scope": {
+    "blind_new_dataset": false,
+    "historical_results_overwritten": false,
+    "task_specific_branches_added": false,
+    "interpretation": "Targeted regression on previously seen failures; this validates harness behavior and diagnoses remaining design gaps, not a new generalization score."
+  },
+  "agent_freeze": {
+    "freeze_id": "repopilot-comprehension-v6-20260930",
+    "source_directory": "/Users/ayc/agent/repopilot-agent-freezes/repopilot-comprehension-v6-20260930",
+    "source_archive": "/Users/ayc/agent/repopilot-agent-freezes/repopilot-comprehension-v6-20260930-source.tar.gz",
+    "source_archive_sha256": "07bcb79031feeb7f965589d80bd4cb54d7b6c4f14665adb5c73d73cdcea6b264",
+    "source_files_aggregate_sha256": "0140f4e2e20ece0828d6470283b305ab1d3dab1ece2b1eff8510817bbe8909d5",
+    "environment_file_copied": false,
+    "entrypoint_verified": true,
+    "module_path": "/Users/ayc/agent/repopilot-agent-freezes/repopilot-comprehension-v6-20260930/repopilot/__init__.py",
+    "cli_shebang": "#!/Users/ayc/agent/repopilot-agent-freezes/repopilot-comprehension-v6-20260930/.venv/bin/python",
+    "verification": {
+      "pytest_passed": 116,
+      "pytest_failed": 0,
+      "compileall_passed": true,
+      "git_diff_check_passed": true
+    },
+    "invalid_predecessor": {
+      "freeze_id": "repopilot-comprehension-v5-20260930",
+      "reason": "Copied virtual-environment entrypoint retained the v4 absolute shebang; the interrupted run is excluded from all results."
+    }
+  },
+  "dataset": {
+    "manifest": "/Users/ayc/.codex/worktrees/fbfa/agent-rep/benchmarks/swebench_verified_medium_v1_comprehension_v2_failures.json",
+    "manifest_file_sha256": "22be2e8444376d5a3ff0fa489d4357e3760aa1d28c4bc36759d61e0085bb4c33",
+    "instance_ids_sha256": "3b4b8e1cb22f9e9280a8a0995cb8f7001f26ce1ab8d840642b4124b5de81eef1",
+    "selected_ordinals": [12, 15, 16],
+    "selected_count": 3,
+    "gold_revalidated": 3,
+    "gold_failures": 0
+  },
+  "configuration": {
+    "provider": "deepseek",
+    "model": "deepseek-chat",
+    "serial_workers": 1,
+    "max_iterations": 50,
+    "max_tool_calls": 200,
+    "max_tokens": 650000,
+    "max_explorer_iterations": 12,
+    "max_explorer_tool_calls": 40,
+    "max_explorer_tokens": 120000,
+    "finalization_token_reserve": 50000,
+    "repair_token_reserve": 150000,
+    "evaluation_token_reserve": 50000,
+    "max_runtime_seconds": 3600,
+    "command_timeout_seconds": 600,
+    "max_repair_iterations": 3,
+    "baseline_aware_tests": true,
+    "prepared_amd64_images": true
+  },
+  "result": {
+    "result_directory": "/Users/ayc/agent/repopilot-swebench-results/stage2-medium-v1-comprehension-v6-targeted",
+    "workspace_directory": "/Users/ayc/agent/swebench-formal-workspaces/stage2-medium-v1-comprehension-v6-targeted",
+    "summary_sha256": "d7f2832f126ec5b30178aecd79a0e16f99dc8907793dfb2913e974e28c6a7ff5",
+    "result_files_aggregate_sha256": "c90fe277588130c70dac63df40ffdc5ce4570fb164ccf08ca3af39cbb9c5c1da",
+    "executed": 3,
+    "agent_attempted": 3,
+    "officially_evaluated_patches": 3,
+    "resolved": 0,
+    "unresolved": 3,
+    "empty_patch": 0,
+    "infrastructure_failure": 0,
+    "input_tokens": 1471450,
+    "output_tokens": 37392,
+    "resolve_rate": 0.0,
+    "running_containers_after_completion": 0
+  },
+  "tasks": [
+    {
+      "ordinal": 12,
+      "instance_id": "astropy__astropy-13236",
+      "internal_status": "failed",
+      "official_status": "unresolved",
+      "changed_files": ["astropy/table/table.py"],
+      "input_plus_output_tokens": 605428,
+      "tool_calls": 67,
+      "repair_iterations": 1,
+      "verified_harness_result": "Three attempted edits to astropy/table/tests/test_mixin.py were rejected with test_change_not_allowed and no test-file file_changed event occurred.",
+      "remaining_design_gap": "The analyzer chose the warning-now phase of a multi-stage proposal, while the evaluated repository version requires the later removal phase."
+    },
+    {
+      "ordinal": 15,
+      "instance_id": "mwaskom__seaborn-3187",
+      "internal_status": "resolved",
+      "official_status": "unresolved",
+      "changed_files": ["seaborn/_core/scales.py"],
+      "input_plus_output_tokens": 302903,
+      "tool_calls": 48,
+      "repair_iterations": 0,
+      "verified_harness_result": "The Coder executed focused probes and the evaluator consumed hypothesis targets.",
+      "remaining_design_gap": "The probes established that an offset exists and labels are consumed directly, but did not falsify whether appending the offset to every label preserves numeric semantics."
+    },
+    {
+      "ordinal": 16,
+      "instance_id": "psf__requests-6028",
+      "internal_status": "failed",
+      "official_status": "unresolved",
+      "changed_files": ["requests/utils.py"],
+      "input_plus_output_tokens": 600511,
+      "tool_calls": 86,
+      "repair_iterations": 2,
+      "verified_harness_result": "The evaluator refused to infer Python 3.8.12 proxy success from a source-only patch and returned unknown instead of a false pass.",
+      "remaining_design_gap": "Planner validation fell back because the generated plan omitted behavior coverage; the generic fallback lost the repository-specific authority-normalization trace, and the repair budget reached token pressure."
+    }
+  ]
+}

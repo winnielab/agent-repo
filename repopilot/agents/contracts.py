@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, Iterable, List
 
+from repopilot.task.intent import is_test_path
+
 
 _NORMATIVE = re.compile(
     r"\b(?:must|must not|should|should not|required|preserve|remain|propagate|unchanged)\b",
@@ -18,6 +20,11 @@ _MUST_PROPAGATE = re.compile(
 _MUST_NOT_CATCH = re.compile(
     r"\b(?:must|should)\s+not\s+(?:catch|suppress|hide)\s+"
     r"(?P<symbol>[A-Z][A-Za-z0-9_]*(?:Error|Exception))\b",
+    re.IGNORECASE,
+)
+_TEMPORARY_ARTIFACT = re.compile(
+    r"(?:^|/)(?:(?:debug|scratch|repro(?:duce)?|experiment|manual[_-]?check|run)[_-][^/]+"
+    r"\.(?:py|sh|txt|json)|[^/]+\.(?:log|out|tmp))$",
     re.IGNORECASE,
 )
 
@@ -80,4 +87,56 @@ def contract_violations(diff: str, contracts: List[Dict[str, Any]]) -> List[Dict
                 "contract_text": contract.get("text", ""),
                 "added_line": added_line,
             })
+    return violations
+
+
+def patch_hygiene_violations(diff: str, *, allow_test_changes: bool,
+                             requested_text: str = "") -> List[Dict[str, Any]]:
+    """Reject evaluation artifacts and out-of-contract test edits generically.
+
+    This gate deliberately reasons about file roles, not benchmark instances or
+    repository names. It complements the model prompt with a deterministic
+    finalization boundary.
+    """
+    violations: List[Dict[str, Any]] = []
+    current_path = ""
+    new_file = False
+    seen = set()
+
+    def inspect_file() -> None:
+        if not current_path:
+            return
+        if not allow_test_changes and is_test_path(current_path):
+            key = ("unrequested_test_change", current_path)
+            if key not in seen:
+                seen.add(key)
+                violations.append({
+                    "kind": key[0],
+                    "file": current_path,
+                    "detail": "The task did not request changing test artifacts.",
+                })
+        explicitly_requested = (
+            current_path.casefold() in requested_text.casefold()
+            or current_path.rsplit("/", 1)[-1].casefold() in requested_text.casefold()
+        )
+        if new_file and not explicitly_requested and _TEMPORARY_ARTIFACT.search(current_path):
+            key = ("temporary_artifact", current_path)
+            if key not in seen:
+                seen.add(key)
+                violations.append({
+                    "kind": key[0],
+                    "file": current_path,
+                    "detail": "A newly added scratch, reproduction, or command-output file leaked into the patch.",
+                })
+
+    for line in diff.splitlines():
+        match = re.match(r"diff --git a/(.*?) b/(.*)$", line)
+        if match:
+            inspect_file()
+            current_path = match.group(2)
+            new_file = False
+            continue
+        if line.startswith("new file mode "):
+            new_file = True
+    inspect_file()
     return violations

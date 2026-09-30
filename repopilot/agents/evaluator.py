@@ -6,14 +6,16 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-from repopilot.agents.contracts import contract_violations
+from repopilot.agents.contracts import contract_violations, patch_hygiene_violations
 from repopilot.agents.reviewer import ReviewResult
 from repopilot.core.models import Message, Serializable
 from repopilot.core.structured import parse_json_object
 from repopilot.llm.base import LLMClient
 from repopilot.observability.events import EventBus
 from repopilot.observability.usage import UsageTracker
+from repopilot.planning.plan import Plan
 from repopilot.task.specification import TaskSpecification
+from repopilot.task.intent import requests_test_changes
 
 
 @dataclass(frozen=True)
@@ -106,7 +108,8 @@ class GoalEvaluator:
 
     async def evaluate(self, specification: TaskSpecification, diff: str,
                        test_result: Dict[str, Any], review: ReviewResult,
-                       repository_evidence: Optional[Dict[str, Any]] = None) -> EvaluationResult:
+                       repository_evidence: Optional[Dict[str, Any]] = None,
+                       plan: Optional[Plan] = None) -> EvaluationResult:
         targets = [
             {
                 "key": f"acceptance:{index}",
@@ -118,15 +121,28 @@ class GoalEvaluator:
         targets.extend({
             "key": f"behavior:{item.key}",
             "criterion": (
-                f"WHEN {item.scenario} => EXPECT {item.expected}"
+                f"[{item.dimension}] WHEN {item.scenario} => EXPECT {item.expected}"
                 + (f"; PRESERVE {item.must_preserve}" if item.must_preserve else "")
+                + (f"; STATE/SIDE EFFECT {item.state_effect}" if item.state_effect else "")
             ),
             "expected": item.expected,
         } for item in specification.behavior_cases)
+        if plan is not None:
+            targets.extend({
+                "key": f"hypothesis:{item.key}",
+                "criterion": (
+                    f"ROOT-CAUSE CLAIM {item.claim}; FALSIFICATION CHECK {item.falsification}"
+                ),
+                "expected": (
+                    "The claim is supported by specific source/command evidence and the "
+                    "falsification attempt did not contradict it."
+                ),
+            } for item in plan.hypothesis_checks)
         payload = {
             "task": specification.to_dict(), "diff": diff[-50_000:],
             "tests": self._test_evidence(test_result), "review": review.to_dict(),
             "repository_evidence": repository_evidence or {},
+            "plan": plan.to_dict() if plan is not None else {},
             "evaluation_targets": targets,
             "schema": {"criteria": [{
                 "criterion_key": "exact key from evaluation_targets",
@@ -142,7 +158,7 @@ class GoalEvaluator:
         criteria: List[CriterionResult] = []
         try:
             response = await self.llm.generate([
-                Message("system", "Independently and skeptically evaluate every evaluation_target and return JSON only. Passing visible tests is necessary but not sufficient for semantic constraints. Treat wording literally, including negative, preservation, input-category, and temporal/version behavior. Broader exception handling, input acceptance, side effects, or API behavior is a failure when the task requests a narrow case. For fail or unknown, separate expected behavior from observed behavior and provide the strongest concrete counterexample plus the candidate assumption it invalidates. Source-level class, inheritance, signature, data-flow, and __slots__ contracts are specific evidence when the claimed behavior follows directly from them; do not require a redundant test in that case. Use unknown when evidence is genuinely insufficient; never turn a plausible implementation claim into pass without specific diff, test, review, or repository evidence."),
+                Message("system", "Independently and skeptically evaluate every evaluation_target and return JSON only. Passing visible tests is necessary but not sufficient for semantic constraints. Treat wording literally, including negative, preservation, input-category, and temporal/version behavior. Broader exception handling, input acceptance, side effects, or API behavior is a failure when the task requests a narrow case. For a hypothesis target, distinguish evidence that merely repeats the claim from an observation capable of falsifying it; mark unknown when the proposed probe/source trace was not performed and source evidence does not directly settle the claim, and fail when command/source evidence contradicts it. For fail or unknown, separate expected behavior from observed behavior and provide the strongest concrete counterexample plus the candidate assumption it invalidates. Source-level class, inheritance, signature, data-flow, and __slots__ contracts are specific evidence when the claimed behavior follows directly from them; do not require a redundant test in that case. Use unknown when evidence is genuinely insufficient; never turn a plausible implementation claim into pass without specific diff, test, review, or repository evidence."),
                 Message("user", json.dumps(payload, ensure_ascii=False)),
             ])
             self.usage.add_usage(response.usage)
@@ -256,6 +272,25 @@ class GoalEvaluator:
                 invalidated_assumption=(
                     "preserving an existing catch is safe despite an explicit propagation contract"
                 ),
+            ))
+        for violation in patch_hygiene_violations(
+            diff,
+            allow_test_changes=requests_test_changes(specification),
+            requested_text="\n".join([
+                specification.title,
+                specification.description,
+                *specification.constraints,
+            ]),
+        ):
+            criteria.append(CriterionResult(
+                "Candidate patch contains only intended deliverables",
+                "fail",
+                f"{violation['file']}: {violation['detail']}",
+                key=f"patch_hygiene:{violation['kind']}:{violation['file']}",
+                expected="No temporary artifacts or out-of-contract test changes are included.",
+                observed=f"Patch includes {violation['file']}.",
+                counterexample=violation["file"],
+                invalidated_assumption="every file currently present in git diff is an intended deliverable",
             ))
         passed = bool(criteria) and all(item.status == "pass" for item in criteria)
         result = EvaluationResult(passed, criteria, summary)

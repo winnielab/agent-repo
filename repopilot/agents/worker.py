@@ -42,16 +42,34 @@ class CoderWorker:
                   repository_evidence: Optional[Dict[str, Any]] = None,
                   ) -> tuple[WorkerResult, AgentResult]:
         behavior_contract = "\n".join(
-            f"- [{item.key}] WHEN {item.scenario} => EXPECT {item.expected}"
+            f"- [{item.key}/{item.dimension}] WHEN {item.scenario} => EXPECT {item.expected}"
             + (f"; PRESERVE {item.must_preserve}" if item.must_preserve else "")
+            + (f"; STATE/SIDE EFFECT {item.state_effect}" if item.state_effect else "")
             for item in specification.behavior_cases
         )
         causal_contract = ""
         if plan is not None:
             causal_contract = (
                 f"Root-cause hypothesis: {plan.root_cause_hypothesis or 'not established'}\n"
-                f"Earliest invariant to restore: {plan.earliest_invariant or 'not established'}"
+                f"Earliest invariant to restore: {plan.earliest_invariant or 'not established'}\n"
+                "Impact surface to preserve:\n- "
+                + "\n- ".join(plan.impact_surface or ["not established"])
             )
+        hypothesis_contract = ""
+        if plan is not None and plan.hypothesis_checks:
+            hypothesis_contract = "\n".join(
+                f"- [{item.key}] CLAIM {item.claim}\n"
+                f"  TRY TO DISPROVE WITH: {item.falsification}\n"
+                f"  GROUNDED BY: {', '.join(item.evidence_keys) or 'no cited observation'}"
+                for item in plan.hypothesis_checks
+            )
+        observations = (repository_evidence or {}).get("observations", [])
+        observation_contract = "\n".join(
+            f"- [{item.get('key', '?')}/{item.get('kind', '?')}] "
+            f"{item.get('path', '?')}:{item.get('line', '?')} "
+            f"{item.get('symbol', '')} — {item.get('detail', '')}".rstrip()
+            for item in observations[:16]
+        )
         normative_contracts = (repository_evidence or {}).get("normative_contracts", [])
         source_contract = "\n".join(
             f"- {item.get('file', '?')}:{item.get('line', '?')}: {item.get('text', '')}"
@@ -62,6 +80,13 @@ class CoderWorker:
             "Acceptance criteria:\n- " + "\n- ".join(specification.acceptance_criteria),
             "Behavior contract:\n" + behavior_contract if behavior_contract else "",
             "Causal plan:\n" + causal_contract if causal_contract else "",
+            (
+                "Hypothesis falsification contract (perform before editing; if a check fails, "
+                "revise the causal path instead of patching the planned output):\n" + hypothesis_contract
+                if hypothesis_contract else ""
+            ),
+            "Task-relevant repository evidence:\n" + observation_contract
+            if observation_contract else "",
             "Explicit source contracts (must not be contradicted):\n" + source_contract
             if source_contract else "",
             f"Current task [{record.id}] {record.title}:\n{record.description}",

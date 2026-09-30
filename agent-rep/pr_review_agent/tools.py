@@ -32,12 +32,14 @@ class ReviewTools:
         target: str,
         transcript: Transcript,
         company_kb: CompanyKnowledgeBase | None = None,
+        test_timeout: int = 180,
     ):
         self.repo = repo.resolve()
         self.base = base
         self.target = target
         self.transcript = transcript
         self.company_kb = company_kb
+        self.test_timeout = max(1, int(test_timeout))
         self._diff_cache: str | None = None
         self._files_cache: list[dict[str, Any]] | None = None
 
@@ -83,7 +85,7 @@ class ReviewTools:
         self.transcript.emit("tool.read_file_context", path=path, line=line, radius=radius)
         return result
 
-    def run_tests(self, command: str, timeout: int = 180) -> dict[str, Any]:
+    def run_tests(self, command: str, timeout: int | None = None) -> dict[str, Any]:
         dangerous = ["rm -rf", "git reset", "git checkout", "shutdown", "reboot", "sudo "]
         if any(token in command for token in dangerous):
             raise ValueError("Refusing to run a destructive test command")
@@ -93,7 +95,7 @@ class ReviewTools:
             cwd=self.repo,
             capture_output=True,
             text=True,
-            timeout=timeout,
+            timeout=timeout or self.test_timeout,
         )
         output = truncate((result.stdout + result.stderr).strip())
         payload = {"command": command, "returncode": result.returncode, "output": output}

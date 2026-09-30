@@ -34,6 +34,7 @@ from repopilot.repo.explorer import RepositoryContext, RepositoryExplorer
 from repopilot.reporting.issue_report import IssueSolveReport
 from repopilot.task.graph import TaskGraph, TaskStatus
 from repopilot.task.specification import TaskSpecification
+from repopilot.task.intent import requests_test_changes
 from repopilot.tools.base import ToolContext
 from repopilot.tools.editing import DeleteFileTool, EditFileTool, WriteFileTool
 from repopilot.tools.filesystem import GlobTool, ReadFileTool
@@ -116,6 +117,11 @@ def _repository_evidence(workspace: Path, context: RepositoryContext,
             continue
     return {
         "structure_summary": context.structure_summary,
+        "target_symbols": context.target_symbols,
+        "implementation_files": context.implementation_files,
+        "test_files": context.test_files,
+        "instruction_files": context.instruction_files,
+        "observations": [item.to_dict() for item in context.observations],
         "important_file_contents": contents,
         "contract_lines": contract_lines,
         "normative_contracts": extract_normative_contracts(contents),
@@ -272,16 +278,26 @@ async def solve_issue(
                     f"failures are tolerated: {failure_ids[:20]}"
                 )
         specification = await bounded(TaskAnalyzer(llm, bus, tracker).analyze(issue, test_requirement))
+        tool_context.values["allow_test_changes"] = requests_test_changes(specification)
         remaining = enforce_budget()
+        explorer_token_ceiling = min(
+            worker_token_ceiling(),
+            tracker.usage.total_tokens + config.max_explorer_tokens,
+        )
         limits = RuntimeLimits(
-            config.max_iterations, config.max_tool_calls, worker_token_ceiling(), remaining,
-            config.max_post_test_iterations, config.max_no_mutation_iterations,
+            config.max_explorer_iterations + 2,
+            config.max_explorer_tool_calls,
+            explorer_token_ceiling,
+            remaining,
+            config.max_post_test_iterations,
+            0,
+            config.max_explorer_iterations,
         )
         explorer_runtime = AgentRuntime(llm, readonly_registry, permission, bus,
                                         usage=tracker, limits=limits)
         repository_context = await bounded(RepositoryExplorer(
             explorer_runtime, tool_context, artifact_dir / "explorer", config.context_char_budget,
-        ).inspect(config.test_command))
+        ).inspect(config.test_command, specification))
         repository_evidence = _repository_evidence(workspace.path, repository_context)
         plan = await bounded(Planner(llm, bus, tracker).create_plan(
             specification, repository_context, repository_evidence,
@@ -355,12 +371,15 @@ async def solve_issue(
         for path in changed_files:
             memory.remember("relevant_files", path)
         reviewer = reviewer or PRReviewAdapter(artifact_dir / "review", mode="simple")
-        review_input = ReviewInput(specification, plan, workspace.path, diff, tests, config.test_command)
+        review_input = ReviewInput(
+            specification, plan, workspace.path, diff, tests, config.test_command,
+            config.command_timeout_seconds,
+        )
         review = await bounded(asyncio.to_thread(reviewer.review, review_input))
         bus.emit("review_finished", decision=review.decision, issues=len(review.issues))
         evaluator = GoalEvaluator(llm, bus, tracker)
         evaluation = await bounded(evaluator.evaluate(
-            specification, diff, tests, review, repository_evidence,
+            specification, diff, tests, review, repository_evidence, plan,
         ))
 
         while not evaluation.passed and repairs < config.max_repair_iterations:
@@ -420,11 +439,14 @@ async def solve_issue(
                 ],
             )
             repository_evidence["command_evidence"] = tool_context.values.get("command_evidence", [])
-            review_input = ReviewInput(specification, plan, workspace.path, diff, tests, config.test_command)
+            review_input = ReviewInput(
+                specification, plan, workspace.path, diff, tests, config.test_command,
+                config.command_timeout_seconds,
+            )
             review = await bounded(asyncio.to_thread(reviewer.review, review_input))
             bus.emit("review_finished", decision=review.decision, issues=len(review.issues), repair=repairs)
             evaluation = await bounded(evaluator.evaluate(
-                specification, diff, tests, review, repository_evidence,
+                specification, diff, tests, review, repository_evidence, plan,
             ))
 
         status = "resolved" if evaluation.passed else "failed"

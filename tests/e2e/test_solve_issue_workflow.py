@@ -68,6 +68,12 @@ def plan_response():
         "summary": "Correct the implementation and verify it.",
         "root_cause_hypothesis": "the arithmetic operator violates quotient semantics",
         "earliest_invariant": "divide computes a / b before returning",
+        "hypothesis_checks": [{
+            "key": "operator-semantics",
+            "claim": "multiplication is the first divergence from quotient semantics",
+            "falsification": "trace divide(8, 2) and reject the claim if an earlier transformation changes the inputs",
+            "evidence_keys": [],
+        }],
         "steps": [{
             "key": "fix", "title": "Fix divide", "description": "Replace multiplication with division.",
             "dependencies": [], "behavior_keys": ["quotient"],
@@ -89,6 +95,17 @@ def evaluation_response(status="pass", evidence="diff and passing test prove the
                 "counterexample": "8 divided by 2" if status != "pass" else "",
                 "invalidated_assumption": (
                     "subtraction is equivalent to division" if status != "pass" else ""
+                ),
+            },
+            {
+                "criterion_key": "hypothesis:operator-semantics",
+                "status": status,
+                "evidence": evidence,
+                "expected": "the arithmetic operator is the first divergence",
+                "observed": "divide directly returns the arithmetic expression",
+                "counterexample": "the current operator is subtraction" if status != "pass" else "",
+                "invalidated_assumption": (
+                    "the current operator implements quotient semantics" if status != "pass" else ""
                 ),
             },
         ],

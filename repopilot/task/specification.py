@@ -15,12 +15,20 @@ class BehaviorCase(Serializable):
     scenario: str
     expected: str
     must_preserve: str = ""
+    dimension: str = "positive"
+    state_effect: str = ""
+
+    DIMENSIONS = frozenset({
+        "positive", "negative", "boundary", "temporal", "preservation", "failure_path",
+    })
 
     def validate(self) -> None:
         if not re.fullmatch(r"[a-z][a-z0-9_-]{0,39}", self.key):
             raise ValueError("behavior case key must be a short lowercase identifier")
         if not self.scenario.strip() or not self.expected.strip():
             raise ValueError("behavior cases require scenario and expected behavior")
+        if self.dimension not in self.DIMENSIONS:
+            raise ValueError("behavior case has an unsupported semantic dimension")
 
 
 @dataclass(frozen=True)

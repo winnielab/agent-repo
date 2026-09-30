@@ -40,6 +40,10 @@ def build_parser() -> argparse.ArgumentParser:
                        help="maximum model follow-up turns after configured tests pass")
     solve.add_argument("--max-no-mutation-iterations", type=int, default=8,
                        help="restrict coding agents to editing tools after this many read-only turns; 0 disables")
+    solve.add_argument("--max-explorer-iterations", type=int, default=12,
+                       help="request read-only repository exploration finalization after this many turns")
+    solve.add_argument("--max-explorer-tool-calls", type=int, default=40)
+    solve.add_argument("--max-explorer-tokens", type=int, default=120_000)
     solve.add_argument("--context-char-budget", type=int, default=80_000)
     solve.add_argument("--large-tool-result-chars", type=int, default=12_000)
     solve.add_argument("--baseline-aware-tests", action="store_true",
@@ -87,6 +91,9 @@ async def _solve(args: argparse.Namespace) -> int:
         evaluation_token_reserve=args.evaluation_token_reserve,
         max_post_test_iterations=args.max_post_test_iterations,
         max_no_mutation_iterations=args.max_no_mutation_iterations,
+        max_explorer_iterations=args.max_explorer_iterations,
+        max_explorer_tool_calls=args.max_explorer_tool_calls,
+        max_explorer_tokens=args.max_explorer_tokens,
         execution_image=args.execution_image,
         execution_platform=args.execution_platform,
         execution_setup_command=args.execution_setup_command,
