@@ -228,3 +228,46 @@ def test_evaluator_requires_hypothesis_check_evidence() -> None:
     check = next(item for item in result.criteria if item.key == "hypothesis:trace-state")
     assert check.status == "unknown"
     assert not result.passed
+
+
+def test_evaluator_rejects_stale_candidate_semantic_evidence() -> None:
+    behavior_spec = TaskSpecification(
+        "Fix", "Preserve semantic values", ["Behavior works"], [],
+        [BehaviorCase("value", "candidate runs", "value remains equivalent")],
+    )
+    plan = Plan(
+        "fix",
+        [PlanStep("fix", "Fix", "Fix value", behavior_keys=["value"])],
+        "conversion loses meaning",
+        "conversion preserves meaning",
+        [],
+        [HypothesisCheck(
+            "candidate-value", "candidate preserves meaning", "compare before and after values",
+            kind="candidate_semantics", behavior_keys=["value"],
+        )],
+        ["value"],
+    )
+    llm = ScriptedLLM([LLMResponse(text='''{
+      "criteria":[
+        {"criterion_key":"acceptance:0","status":"pass","evidence":"tests"},
+        {"criterion_key":"behavior:value","status":"pass","evidence":"probe"},
+        {"criterion_key":"hypothesis:candidate-value","status":"pass","evidence":"probe"}
+      ],"summary":"looks correct"
+    }''')])
+    evidence = {
+        "mutation_revision": 2,
+        "verification_evidence": [{
+            "check_key": "candidate-value", "kind": "candidate_semantics",
+            "verdict": "supported", "observation": "old candidate passed",
+            "evidence": ["probe"], "mutation_revision": 1,
+        }],
+    }
+
+    result = asyncio.run(GoalEvaluator(llm, EventBus("run"), UsageTracker()).evaluate(
+        behavior_spec, "diff", {"ok": True}, ReviewResult("approve"), evidence, plan,
+    ))
+
+    stale = next(item for item in result.criteria if item.key == "verification:candidate-value")
+    assert stale.status == "unknown"
+    assert "revision 1" in stale.observed
+    assert not result.passed

@@ -99,7 +99,7 @@ def _heredoc_executable(command: str) -> Optional[str]:
 class PermissionManager:
     SAFE_TOOLS = {
         "read_file", "search_code", "glob", "git_diff", "git_status",
-        "write_file", "edit_file", "delete_file", "run_tests",
+        "write_file", "edit_file", "delete_file", "record_evidence", "run_tests",
     }
     PATH_TOOLS = {"read_file", "search_code", "glob", "write_file", "edit_file", "delete_file"}
     HARD_DENY = (

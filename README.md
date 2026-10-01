@@ -115,6 +115,9 @@ python3 scripts/run_all.py \
 See [the Stage 1 implementation report](docs/RepoPilot_Stage1_实现与验证.md)
 and [the Stage 2 implementation report](docs/RepoPilot_Stage2_实现与验证.md)
 for module boundaries, event contracts, benchmark results, and current gate status.
+The current architecture re-review, semantic-evidence changes, multi-agent target
+design, and the new 16-task acceptance protocol are documented in
+[the Stage 2 architecture review](docs/RepoPilot_Stage2_架构复查与改进_20261001.md).
 Development failures, root causes, fixes, diagnostic reruns, and the frozen-suite
 continuation protocol are tracked in
 [the development issue log](docs/RepoPilot_开发问题与修复记录.md). The task-adaptive

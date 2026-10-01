@@ -118,20 +118,40 @@ class GoalEvaluator:
             }
             for index, criterion in enumerate(specification.acceptance_criteria)
         ]
+        required_behavior_keys = [item.key for item in specification.behavior_cases]
+        active_behavior_keys = set(required_behavior_keys)
+        deferred_behavior_keys: set[str] = set()
+        if plan is not None:
+            active_behavior_keys, deferred_behavior_keys = plan.behavior_partition(
+                required_behavior_keys,
+            )
         targets.extend({
-            "key": f"behavior:{item.key}",
+            "key": (
+                f"behavior:{item.key}"
+                if item.key in active_behavior_keys
+                else f"deferred_behavior:{item.key}"
+            ),
             "criterion": (
-                f"[{item.dimension}] WHEN {item.scenario} => EXPECT {item.expected}"
+                (
+                    f"[{item.dimension}] WHEN {item.scenario} => EXPECT {item.expected}"
+                    if item.key in active_behavior_keys
+                    else f"[deferred {item.temporal_scope}] DO NOT IMPLEMENT YET: "
+                         f"WHEN {item.scenario} => FUTURE EXPECTATION {item.expected}"
+                )
                 + (f"; PRESERVE {item.must_preserve}" if item.must_preserve else "")
                 + (f"; STATE/SIDE EFFECT {item.state_effect}" if item.state_effect else "")
             ),
-            "expected": item.expected,
+            "expected": (
+                item.expected if item.key in active_behavior_keys
+                else "The candidate preserves current checkout behavior and does not implement this future-only change."
+            ),
         } for item in specification.behavior_cases)
         if plan is not None:
             targets.extend({
                 "key": f"hypothesis:{item.key}",
                 "criterion": (
-                    f"ROOT-CAUSE CLAIM {item.claim}; FALSIFICATION CHECK {item.falsification}"
+                    f"{item.kind.upper()} CLAIM {item.claim}; "
+                    f"FALSIFICATION CHECK {item.falsification}"
                 ),
                 "expected": (
                     "The claim is supported by specific source/command evidence and the "
@@ -158,7 +178,7 @@ class GoalEvaluator:
         criteria: List[CriterionResult] = []
         try:
             response = await self.llm.generate([
-                Message("system", "Independently and skeptically evaluate every evaluation_target and return JSON only. Passing visible tests is necessary but not sufficient for semantic constraints. Treat wording literally, including negative, preservation, input-category, and temporal/version behavior. Broader exception handling, input acceptance, side effects, or API behavior is a failure when the task requests a narrow case. For a hypothesis target, distinguish evidence that merely repeats the claim from an observation capable of falsifying it; mark unknown when the proposed probe/source trace was not performed and source evidence does not directly settle the claim, and fail when command/source evidence contradicts it. For fail or unknown, separate expected behavior from observed behavior and provide the strongest concrete counterexample plus the candidate assumption it invalidates. Source-level class, inheritance, signature, data-flow, and __slots__ contracts are specific evidence when the claimed behavior follows directly from them; do not require a redundant test in that case. Use unknown when evidence is genuinely insufficient; never turn a plausible implementation claim into pass without specific diff, test, review, or repository evidence."),
+                Message("system", "Independently and skeptically evaluate every evaluation_target and return JSON only. Passing visible tests is necessary but not sufficient for semantic constraints. Treat wording literally, including negative, preservation, input-category, and temporal/version behavior. A deferred_behavior target passes only when the candidate leaves the future-only migration unapplied in the current checkout. Broader exception handling, input acceptance, side effects, or API behavior is a failure when the task requests a narrow case. For a hypothesis target, distinguish dependency facts from candidate semantics: a fact that an API returns something does not prove that the candidate transformation preserves meaning. Candidate semantics require revision-current verification evidence comparing observable values or state over the listed behavior matrix. Mark unknown when the proposed probe/source trace was not performed and source evidence does not directly settle the claim, and fail when command/source evidence contradicts it. For fail or unknown, separate expected behavior from observed behavior and provide the strongest concrete counterexample plus the candidate assumption it invalidates. Source-level class, inheritance, signature, data-flow, and __slots__ contracts are specific evidence when the claimed behavior follows directly from them; do not require a redundant test in that case. Use unknown when evidence is genuinely insufficient; never turn a plausible implementation claim into pass without specific diff, test, review, or repository evidence."),
                 Message("user", json.dumps(payload, ensure_ascii=False)),
             ])
             self.usage.add_usage(response.usage)
@@ -292,6 +312,46 @@ class GoalEvaluator:
                 counterexample=violation["file"],
                 invalidated_assumption="every file currently present in git diff is an intended deliverable",
             ))
+        if plan is not None:
+            records = {
+                str(item.get("check_key", "")): item
+                for item in (repository_evidence or {}).get("verification_evidence", [])
+                if isinstance(item, dict) and item.get("check_key")
+            }
+            current_revision = int((repository_evidence or {}).get("mutation_revision", 0))
+            for check in plan.hypothesis_checks:
+                if check.kind != "candidate_semantics":
+                    continue
+                record = records.get(check.key)
+                stale = bool(record) and int(record.get("mutation_revision", -1)) != current_revision
+                verdict = str(record.get("verdict", "")) if record else ""
+                if record and not stale and verdict == "supported":
+                    continue
+                if stale:
+                    observed = (
+                        f"Evidence was recorded at mutation revision "
+                        f"{record.get('mutation_revision')}, but the candidate is revision "
+                        f"{current_revision}."
+                    )
+                elif record:
+                    observed = str(record.get("observation", "candidate check did not support the patch"))
+                else:
+                    observed = "No structured candidate-semantic evidence was recorded."
+                criteria.append(CriterionResult(
+                    f"Candidate semantic check is current and supported: {check.key}",
+                    "fail" if verdict == "contradicted" and not stale else "unknown",
+                    observed,
+                    key=f"verification:{check.key}",
+                    expected=(
+                        "A post-edit, revision-current semantic probe or source proof supports "
+                        f"behaviors: {', '.join(check.behavior_keys)}."
+                    ),
+                    observed=observed,
+                    counterexample=observed,
+                    invalidated_assumption=(
+                        "dependency facts alone prove the candidate transformation is semantically correct"
+                    ),
+                ))
         passed = bool(criteria) and all(item.status == "pass" for item in criteria)
         result = EvaluationResult(passed, criteria, summary)
         self.event_bus.emit("goal_evaluation_finished", passed=passed,

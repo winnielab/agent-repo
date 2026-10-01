@@ -17,10 +17,12 @@ class BehaviorCase(Serializable):
     must_preserve: str = ""
     dimension: str = "positive"
     state_effect: str = ""
+    temporal_scope: str = "always"
 
     DIMENSIONS = frozenset({
         "positive", "negative", "boundary", "temporal", "preservation", "failure_path",
     })
+    TEMPORAL_SCOPES = frozenset({"always", "current", "future"})
 
     def validate(self) -> None:
         if not re.fullmatch(r"[a-z][a-z0-9_-]{0,39}", self.key):
@@ -29,6 +31,10 @@ class BehaviorCase(Serializable):
             raise ValueError("behavior cases require scenario and expected behavior")
         if self.dimension not in self.DIMENSIONS:
             raise ValueError("behavior case has an unsupported semantic dimension")
+        if self.temporal_scope not in self.TEMPORAL_SCOPES:
+            raise ValueError("behavior case has an unsupported temporal scope")
+        if self.temporal_scope != "always" and self.dimension != "temporal":
+            raise ValueError("only temporal behavior cases may select a temporal scope")
 
 
 @dataclass(frozen=True)

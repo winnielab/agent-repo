@@ -75,3 +75,19 @@ diff --git a/tests/test_parser.py b/tests/test_parser.py
 +++ b/tests/test_parser.py
 """
     assert patch_hygiene_violations(diff, allow_test_changes=True) == []
+
+
+def test_patch_hygiene_blocks_probe_prefixed_artifact() -> None:
+    diff = """diff --git a/probe_test_fixture.py b/probe_test_fixture.py
+new file mode 100644
+--- /dev/null
++++ b/probe_test_fixture.py
+@@ -0,0 +1 @@
++print('probe')
+"""
+
+    violations = patch_hygiene_violations(diff, allow_test_changes=True)
+
+    assert [(item["kind"], item["file"]) for item in violations] == [
+        ("temporary_artifact", "probe_test_fixture.py"),
+    ]

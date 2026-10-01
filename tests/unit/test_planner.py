@@ -123,7 +123,7 @@ def test_planner_requires_causal_contract_and_behavior_coverage() -> None:
     assert plan.steps[0].behavior_keys == ["missing_scheme", "has_scheme"]
 
 
-def test_planner_falls_back_when_behavior_case_is_uncovered() -> None:
+def test_planner_recovers_missing_behavior_coverage_without_discarding_valid_plan() -> None:
     scoped = TaskSpecification(
         "Fix", "Fix both branches", ["Behavior works", "Tests pass"], [],
         [BehaviorCase("negative_case", "feature is disabled", "output stays unchanged")],
@@ -141,7 +141,9 @@ def test_planner_falls_back_when_behavior_case_is_uncovered() -> None:
     ))
 
     assert plan.steps[0].behavior_keys == ["negative_case"]
-    assert "earliest" in plan.summary.casefold()
+    assert plan.summary == "incomplete"
+    assert plan.root_cause_hypothesis == "a branch is wrong"
+    assert any(item.kind == "candidate_semantics" for item in plan.hypothesis_checks)
 
 
 def test_planner_cites_task_focused_repository_evidence() -> None:
@@ -181,7 +183,7 @@ def test_planner_cites_task_focused_repository_evidence() -> None:
     assert plan.hypothesis_checks[0].key == "trace-failure-state"
 
 
-def test_behavior_plan_requires_a_falsifiable_hypothesis_check() -> None:
+def test_behavior_plan_repairs_missing_falsifiable_checks() -> None:
     scoped = TaskSpecification(
         "Fix parser", "Preserve state when parsing fails", ["Behavior works"], [],
         [BehaviorCase("failure_state", "parsing fails", "state is preserved")],
@@ -198,5 +200,39 @@ def test_behavior_plan_requires_a_falsifiable_hypothesis_check() -> None:
         scoped, RepositoryContext("python"),
     ))
 
-    assert plan.steps[0].key == "implement"
-    assert plan.hypothesis_checks[0].falsification
+    assert plan.steps[0].key == "implementation"
+    assert {item.kind for item in plan.hypothesis_checks} == {
+        "dependency_fact", "candidate_semantics",
+    }
+
+
+def test_planner_defers_future_temporal_behavior_for_current_checkout() -> None:
+    scoped = TaskSpecification(
+        "Stage migration", "Warn now and change behavior in a future release",
+        ["Current behavior is correct", "Tests pass"], [],
+        [
+            BehaviorCase(
+                "warn_now", "the deprecated input is used", "a warning is emitted",
+                dimension="temporal", temporal_scope="current",
+            ),
+            BehaviorCase(
+                "change_later", "the activation release is reached", "new behavior is used",
+                dimension="temporal", temporal_scope="future",
+            ),
+        ],
+    )
+    repository = RepositoryContext(
+        "python", structure_summary="package",
+        observations=[RepositoryObservation(
+            "version", "version", "version.py", 1, "__version__", "pre-activation version",
+        )],
+        active_temporal_phase="current",
+        temporal_rationale="version.py is below the activation release",
+        temporal_evidence_keys=["version"],
+    )
+    plan = Planner.fallback(scoped, repository)
+
+    assert plan.active_behavior_keys == ["warn_now"]
+    assert plan.deferred_behavior_keys == ["change_later"]
+    assert plan.steps[0].behavior_keys == ["warn_now"]
+    plan.validate(["warn_now", "change_later"], ["version"])

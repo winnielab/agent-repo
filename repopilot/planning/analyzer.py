@@ -38,6 +38,7 @@ class TaskAnalyzer:
                 "Behavior outside the issue-described scope remains unchanged",
                 "positive",
                 "Issue-visible state and failure-path side effects remain compatible",
+                "always",
             )],
         )
 
@@ -57,25 +58,36 @@ class TaskAnalyzer:
                     "expected": "observable expected behavior",
                     "must_preserve": "explicitly unchanged behavior, or empty string",
                     "state_effect": "required state/side effect after success or failure, or empty string",
+                    "temporal_scope": "always|current|future; only use current/future for temporal rows",
                 }],
             },
         }
         self.event_bus.emit("task_analysis_started")
         try:
             response = await self.llm.generate([
-                Message("system", "Analyze the software issue. Return one JSON object only with 2-5 concise, observable acceptance criteria and 1-8 behavior_cases. Include the configured test command passing as an acceptance criterion, but do not create a behavior case for merely running that command. A behavior case is not a test case: it is an issue-derived runtime scenario, its expected behavior, any behavior the issue explicitly says must remain unchanged, and any required state or side effect after success or failure. Classify each row as positive, negative, boundary, temporal, preservation, or failure_path. Split positive/negative, current/future version, input-category, and failure-state branches only when the issue states or directly implies them. Do not invent edge cases, exception types, input classes, or hidden-test guesses. Do not copy the issue verbatim as the only criterion."),
+                Message("system", "Analyze the software issue. Return one JSON object only with 2-5 concise, observable acceptance criteria and 1-8 behavior_cases. Include the configured test command passing as an acceptance criterion, but do not create a behavior case for merely running that command. A behavior case is not a test case: it is an issue-derived runtime scenario, its expected behavior, any behavior the issue explicitly says must remain unchanged, and any required state or side effect after success or failure. Classify each row as positive, negative, boundary, temporal, preservation, or failure_path. Split positive/negative, current/future version, input-category, and failure-state branches only when the issue states or directly implies them. For an explicitly staged migration, emit separate temporal rows and label them temporal_scope=current or future; all other rows use always. The current/future label records issue intent only: repository exploration will decide which phase the checkout is in. Do not invent edge cases, exception types, input classes, or hidden-test guesses. Do not copy the issue verbatim as the only criterion."),
                 Message("user", json.dumps(prompt, ensure_ascii=False)),
             ])
             self.usage.add_usage(response.usage)
             data = parse_json_object(response.text)
-            behavior_cases = [BehaviorCase(
-                key=str(item["key"]).strip(),
-                scenario=str(item["scenario"]).strip(),
-                expected=str(item["expected"]).strip(),
-                must_preserve=str(item.get("must_preserve", "")).strip(),
-                dimension=str(item.get("dimension", "positive")).strip(),
-                state_effect=str(item.get("state_effect", "")).strip(),
-            ) for item in data.get("behavior_cases", [])]
+            behavior_cases = []
+            for item in data.get("behavior_cases", []):
+                temporal_scope = str(item.get("temporal_scope", "always")).strip()
+                dimension = str(item.get("dimension", "positive")).strip()
+                # A model can correctly identify the staged phase while leaving the
+                # broader scenario dimension as positive/preservation. Preserve that
+                # useful row and normalize only the dependent classifier field.
+                if temporal_scope in {"current", "future"}:
+                    dimension = "temporal"
+                behavior_cases.append(BehaviorCase(
+                    key=str(item["key"]).strip(),
+                    scenario=str(item["scenario"]).strip(),
+                    expected=str(item["expected"]).strip(),
+                    must_preserve=str(item.get("must_preserve", "")).strip(),
+                    dimension=dimension,
+                    state_effect=str(item.get("state_effect", "")).strip(),
+                    temporal_scope=temporal_scope,
+                ))
             if not behavior_cases:
                 raise ValueError("task analysis requires at least one issue-derived behavior case")
             specification = TaskSpecification(

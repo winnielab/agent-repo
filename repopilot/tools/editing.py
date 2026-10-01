@@ -24,8 +24,15 @@ def _test_change_guard(path: str, context: ToolContext) -> ToolResult | None:
     )
 
 
+def _record_mutation(context: ToolContext) -> int:
+    revision = int(context.values.get("mutation_revision", 0)) + 1
+    context.values["mutation_revision"] = revision
+    return revision
+
+
 class WriteFileTool:
     name = "write_file"
+    mutates_workspace = True
     description = "Create or replace a UTF-8 text file inside the workspace."
 
     def schema(self) -> Dict[str, Any]:
@@ -51,11 +58,14 @@ class WriteFileTool:
         relative = path.relative_to(context.workspace.resolve()).as_posix()
         context.event_bus.emit("file_changed", path=relative, operation="create" if before is None else "replace",
                                before_chars=len(before or ""), after_chars=len(content))
-        return ToolResult(True, f"Wrote {len(content)} characters to {relative}", {"path": relative})
+        revision = _record_mutation(context)
+        return ToolResult(True, f"Wrote {len(content)} characters to {relative}",
+                          {"path": relative, "mutation_revision": revision})
 
 
 class EditFileTool:
     name = "edit_file"
+    mutates_workspace = True
     description = "Replace exact text in one file; succeeds only when the old text occurs exactly once."
 
     def schema(self) -> Dict[str, Any]:
@@ -93,11 +103,14 @@ class EditFileTool:
         relative = path.relative_to(context.workspace.resolve()).as_posix()
         context.event_bus.emit("file_changed", path=relative, operation="edit",
                                before_chars=len(original), after_chars=len(updated))
-        return ToolResult(True, f"Edited {relative}", {"path": relative})
+        revision = _record_mutation(context)
+        return ToolResult(True, f"Edited {relative}",
+                          {"path": relative, "mutation_revision": revision})
 
 
 class DeleteFileTool:
     name = "delete_file"
+    mutates_workspace = True
     description = "Delete one regular file inside the isolated workspace; directories are never removed."
 
     def schema(self) -> Dict[str, Any]:
@@ -122,4 +135,7 @@ class DeleteFileTool:
         path.unlink()
         context.event_bus.emit("file_changed", path=relative, operation="delete",
                                before_chars=size, after_chars=0)
-        return ToolResult(True, f"Deleted {relative}", {"path": relative, "deleted_bytes": size})
+        revision = _record_mutation(context)
+        return ToolResult(True, f"Deleted {relative}", {
+            "path": relative, "deleted_bytes": size, "mutation_revision": revision,
+        })

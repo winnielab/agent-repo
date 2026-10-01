@@ -26,10 +26,24 @@ class EchoTool:
 
 class PassingTestsTool(EchoTool):
     name = "run_tests"
+    validates_workspace = True
 
 
 class EditingTool(EchoTool):
     name = "edit_file"
+    mutates_workspace = True
+
+
+class EvidenceTool(EchoTool):
+    name = "record_evidence"
+
+    async def execute(self, arguments, context):
+        context.values.setdefault("verification_evidence", []).append({
+            "check_key": arguments["check_key"],
+            "verdict": "supported",
+            "mutation_revision": context.values.get("mutation_revision", 1),
+        })
+        return ToolResult(True, "recorded")
 
 
 class AllowAll(PermissionManager):
@@ -255,4 +269,38 @@ def test_runtime_forces_readonly_agent_to_synthesize_after_bounded_exploration(t
     assert any("Read-only exploration checkpoint" in message.content
                for message in llm.requests[2][0])
     assert any(event["event_type"] == "agent_readonly_finalize_requested"
+               for event in memory.events)
+
+
+def test_runtime_defers_coder_completion_until_required_evidence_is_current(tmp_path) -> None:
+    llm = ScriptedLLM([
+        LLMResponse(tool_calls=[ToolCall("edit", "edit_file", {})]),
+        LLMResponse(text="implemented"),
+        LLMResponse(tool_calls=[ToolCall(
+            "evidence", "record_evidence", {"check_key": "semantic-check"},
+        )]),
+        LLMResponse(text="verified"),
+    ])
+    memory = MemorySubscriber()
+    bus = EventBus("run", [memory])
+    task = AgentTask("change code")
+    context = ContextManager("system", task, tmp_path, bus)
+    values = {
+        "mutation_revision": 1,
+        "required_verification_keys": ["semantic-check"],
+    }
+
+    result = asyncio.run(AgentRuntime(
+        llm, ToolRegistry([EditingTool(), EvidenceTool()]), AllowAll(tmp_path), bus,
+        limits=RuntimeLimits(10, 10, 1000, 10),
+    ).run(
+        Agent("coder", "system", ["edit_file", "record_evidence"]), task, context,
+        ToolContext(tmp_path, LocalEnvironment(tmp_path), "run", bus, values),
+    ))
+
+    assert result.status == "completed"
+    assert result.iterations == 4
+    assert any("Completion is blocked" in message.content
+               for message in llm.requests[2][0])
+    assert any(event["event_type"] == "agent_verification_completion_deferred"
                for event in memory.events)

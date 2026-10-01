@@ -10,6 +10,7 @@ from repopilot.tools.base import ToolContext, function_schema
 
 class RunTestsTool:
     name = "run_tests"
+    validates_workspace = True
     description = "Run the test command configured by the user for this solve run."
 
     def __init__(self, command: str, timeout: float = 60.0,

@@ -27,7 +27,9 @@ class RepositoryObservation(Serializable):
     symbol: str = ""
     detail: str = ""
 
-    KINDS = frozenset({"instruction", "definition", "caller", "state", "test", "dependency"})
+    KINDS = frozenset({
+        "instruction", "definition", "caller", "state", "test", "dependency", "version",
+    })
 
     def validate(self) -> None:
         if not self.key.strip() or not self.path.strip() or self.line < 1:
@@ -49,6 +51,20 @@ class RepositoryContext(Serializable):
     test_files: List[str] = field(default_factory=list)
     instruction_files: List[str] = field(default_factory=list)
     observations: List[RepositoryObservation] = field(default_factory=list)
+    active_temporal_phase: str = "unknown"
+    temporal_rationale: str = ""
+    temporal_evidence_keys: List[str] = field(default_factory=list)
+
+    TEMPORAL_PHASES = frozenset({"current", "future", "unknown"})
+
+    def validate_temporal_context(self) -> None:
+        if self.active_temporal_phase not in self.TEMPORAL_PHASES:
+            raise ValueError("repository context has an unsupported temporal phase")
+        known = {item.key for item in self.observations}
+        if set(self.temporal_evidence_keys) - known:
+            raise ValueError("temporal context references unknown repository evidence")
+        if self.active_temporal_phase != "unknown" and not self.temporal_evidence_keys:
+            raise ValueError("a selected temporal phase requires repository evidence")
 
 
 class RepositoryExplorer:
@@ -89,6 +105,7 @@ class RepositoryExplorer:
             language, [], configured_test, important,
             f"{len(files)} files; top-level: {', '.join(files[:20])}", build,
             [], implementation_files, test_files, instructions, [],
+            "unknown", "No source-backed version phase was established.", [],
         )
 
     async def inspect(self, configured_test: str,
@@ -104,6 +121,11 @@ class RepositoryExplorer:
             "and adjacent tests. Discover AGENTS.md or CLAUDE.md instructions when present. Use read-only "
             "tools as needed and return only source-backed observations with real paths and line numbers. "
             "Do not build a full repository map.\n"
+            "If the task contract contains temporal_scope=current or future, inspect the checkout's "
+            "version metadata, changelog/release notes, and/or current tests. Return "
+            "active_temporal_phase=current, future, or unknown, a concise temporal_rationale, and "
+            "temporal_evidence_keys citing the observations that establish it. Never choose the future "
+            "phase merely because the issue describes a future migration.\n"
             f"Task contract: {task_contract}\n"
             f"The user-configured test command is: {configured_test}"
         )
@@ -159,6 +181,32 @@ class RepositoryExplorer:
                 *[str(item) for item in data.get("important_files", [])],
                 *[item.path for item in observations],
             ]))[:40]
+            active_temporal_phase = str(data.get("active_temporal_phase", "unknown")).strip()
+            temporal_rationale = str(data.get("temporal_rationale", "")).strip()
+            temporal_evidence_keys = [
+                str(item).strip() for item in data.get("temporal_evidence_keys", [])
+                if str(item).strip()
+            ]
+            if active_temporal_phase != "unknown" and not temporal_evidence_keys:
+                temporal_rationale = (
+                    temporal_rationale + " " if temporal_rationale else ""
+                ) + "Phase selection was downgraded to unknown because no repository evidence was cited."
+                active_temporal_phase = "unknown"
+            observations_by_key = {item.key: item for item in observations}
+            temporal_sources = [
+                observations_by_key[key]
+                for key in temporal_evidence_keys
+                if key in observations_by_key
+            ]
+            if (active_temporal_phase != "unknown"
+                    and not any(item.kind == "version" for item in temporal_sources)):
+                temporal_rationale = (
+                    temporal_rationale + " " if temporal_rationale else ""
+                ) + (
+                    "Phase selection was downgraded to unknown because the cited evidence did "
+                    "not establish the checkout version or release phase."
+                )
+                active_temporal_phase = "unknown"
             repository = RepositoryContext(
                 language=str(data["language"]),
                 frameworks=[str(item) for item in data.get("frameworks", [])],
@@ -171,9 +219,13 @@ class RepositoryExplorer:
                 test_files=test_files[:20],
                 instruction_files=instruction_files[:20],
                 observations=observations,
+                active_temporal_phase=active_temporal_phase,
+                temporal_rationale=temporal_rationale,
+                temporal_evidence_keys=temporal_evidence_keys,
             )
             if not repository.language or not repository.structure_summary:
                 raise ValueError("incomplete repository context")
+            repository.validate_temporal_context()
             self.runtime.event_bus.emit("repository_explored", fallback=False,
                                         language=repository.language,
                                         important_files=repository.important_files)

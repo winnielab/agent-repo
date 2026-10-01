@@ -41,8 +41,15 @@ class CoderWorker:
                   plan: Optional[Plan] = None,
                   repository_evidence: Optional[Dict[str, Any]] = None,
                   ) -> tuple[WorkerResult, AgentResult]:
+        active_behavior_keys = set(
+            plan.active_behavior_keys if plan is not None else [
+                item.key for item in specification.behavior_cases
+            ]
+        )
         behavior_contract = "\n".join(
-            f"- [{item.key}/{item.dimension}] WHEN {item.scenario} => EXPECT {item.expected}"
+            f"- [{'ACTIVE' if item.key in active_behavior_keys else 'DEFERRED'}/"
+            f"{item.key}/{item.dimension}/{item.temporal_scope}] "
+            f"WHEN {item.scenario} => EXPECT {item.expected}"
             + (f"; PRESERVE {item.must_preserve}" if item.must_preserve else "")
             + (f"; STATE/SIDE EFFECT {item.state_effect}" if item.state_effect else "")
             for item in specification.behavior_cases
@@ -54,13 +61,17 @@ class CoderWorker:
                 f"Earliest invariant to restore: {plan.earliest_invariant or 'not established'}\n"
                 "Impact surface to preserve:\n- "
                 + "\n- ".join(plan.impact_surface or ["not established"])
+                + f"\nTemporal phase rationale: {plan.temporal_rationale or 'not established'}"
+                + f"\nActive behavior keys: {', '.join(plan.active_behavior_keys) or 'none'}"
+                + f"\nDeferred behavior keys: {', '.join(plan.deferred_behavior_keys) or 'none'}"
             )
         hypothesis_contract = ""
         if plan is not None and plan.hypothesis_checks:
             hypothesis_contract = "\n".join(
-                f"- [{item.key}] CLAIM {item.claim}\n"
+                f"- [{item.key}/{item.kind}] CLAIM {item.claim}\n"
                 f"  TRY TO DISPROVE WITH: {item.falsification}\n"
-                f"  GROUNDED BY: {', '.join(item.evidence_keys) or 'no cited observation'}"
+                f"  GROUNDED BY: {', '.join(item.evidence_keys) or 'no cited observation'}\n"
+                f"  BEHAVIORS: {', '.join(item.behavior_keys) or 'root-cause fact'}"
                 for item in plan.hypothesis_checks
             )
         observations = (repository_evidence or {}).get("observations", [])
@@ -81,8 +92,11 @@ class CoderWorker:
             "Behavior contract:\n" + behavior_contract if behavior_contract else "",
             "Causal plan:\n" + causal_contract if causal_contract else "",
             (
-                "Hypothesis falsification contract (perform before editing; if a check fails, "
-                "revise the causal path instead of patching the planned output):\n" + hypothesis_contract
+                "Hypothesis falsification contract: perform dependency_fact checks before editing "
+                "and candidate_semantics checks after editing. Tag focused bash probes with "
+                "evidence_for=<check key>, then call record_evidence for every check. If a check "
+                "fails, revise the causal path instead of patching the planned output.\n"
+                + hypothesis_contract
                 if hypothesis_contract else ""
             ),
             "Task-relevant repository evidence:\n" + observation_contract

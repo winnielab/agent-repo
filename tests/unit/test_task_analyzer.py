@@ -44,3 +44,33 @@ def test_analyzer_rejects_unfocused_criteria_expansion() -> None:
     result = asyncio.run(TaskAnalyzer(llm, EventBus("run"), UsageTracker()).analyze("Fix it", "pytest -q"))
     assert len(result.acceptance_criteria) == 3
     assert any("pytest -q" in item for item in result.acceptance_criteria)
+
+
+def test_analyzer_normalizes_staged_scope_without_discarding_specification() -> None:
+    llm = ScriptedLLM([LLMResponse(text=json.dumps({
+        "title": "Stage a migration",
+        "description": "Warn now and change behavior in the future.",
+        "acceptance_criteria": ["A warning is emitted now", "Future behavior is deferred"],
+        "constraints": [],
+        "behavior_cases": [{
+            "key": "warn_now",
+            "scenario": "the current release receives the legacy input",
+            "expected": "a migration warning is emitted",
+            "dimension": "positive",
+            "temporal_scope": "current",
+        }, {
+            "key": "change_later",
+            "scenario": "the future release receives the legacy input",
+            "expected": "the new representation is used",
+            "dimension": "positive",
+            "temporal_scope": "future",
+        }],
+    }))])
+
+    result = asyncio.run(TaskAnalyzer(
+        llm, EventBus("run"), UsageTracker(),
+    ).analyze("Stage it", "pytest -q"))
+
+    assert [item.key for item in result.behavior_cases] == ["warn_now", "change_later"]
+    assert [item.dimension for item in result.behavior_cases] == ["temporal", "temporal"]
+    assert [item.temporal_scope for item in result.behavior_cases] == ["current", "future"]

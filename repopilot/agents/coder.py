@@ -8,7 +8,7 @@ from repopilot.core.agent import Agent
 class CoderAgent(Agent):
     TOOL_NAMES = [
         "glob", "read_file", "search_code", "write_file", "edit_file", "delete_file",
-        "bash", "run_tests", "git_status", "git_diff",
+        "bash", "record_evidence", "run_tests", "git_status", "git_diff",
     ]
 
     def __init__(self, prompt_path: Path = None) -> None:

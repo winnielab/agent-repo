@@ -73,6 +73,15 @@ def plan_response():
             "claim": "multiplication is the first divergence from quotient semantics",
             "falsification": "trace divide(8, 2) and reject the claim if an earlier transformation changes the inputs",
             "evidence_keys": [],
+            "kind": "dependency_fact",
+            "behavior_keys": [],
+        }, {
+            "key": "candidate-quotient",
+            "claim": "the candidate returns the semantic quotient",
+            "falsification": "evaluate divide(8, 2) after editing and reject the patch unless the result is 4",
+            "evidence_keys": [],
+            "kind": "candidate_semantics",
+            "behavior_keys": ["quotient"],
         }],
         "steps": [{
             "key": "fix", "title": "Fix divide", "description": "Replace multiplication with division.",
@@ -108,6 +117,17 @@ def evaluation_response(status="pass", evidence="diff and passing test prove the
                     "the current operator implements quotient semantics" if status != "pass" else ""
                 ),
             },
+            {
+                "criterion_key": "hypothesis:candidate-quotient",
+                "status": status,
+                "evidence": evidence,
+                "expected": "the candidate returns the quotient",
+                "observed": "divide(8, 2) returns the candidate value",
+                "counterexample": "divide(8, 2) is not 4" if status != "pass" else "",
+                "invalidated_assumption": (
+                    "the candidate operator is division" if status != "pass" else ""
+                ),
+            },
         ],
         "summary": "Goal satisfied." if status == "pass" else "Division is still wrong.",
     }), usage=Usage(10, 4))
@@ -135,6 +155,15 @@ def test_issue_workflow_persists_plan_memory_review_and_evaluation(tmp_path) -> 
         LLMResponse(tool_calls=[ToolCall("edit", "edit_file", {
             "path": "calculator.py", "old_text": "return a * b", "new_text": "return a / b",
         })], usage=Usage(8, 2)),
+        LLMResponse(tool_calls=[ToolCall("probe", "bash", {
+            "command": "python -c 'from calculator import divide; assert divide(8, 2) == 4'",
+            "evidence_for": "candidate-quotient",
+        })]),
+        LLMResponse(tool_calls=[ToolCall("evidence", "record_evidence", {
+            "check_key": "candidate-quotient", "verdict": "supported",
+            "observation": "divide(8, 2) evaluates to 4 after the edit",
+            "evidence": ["calculator.py:2", "configured unittest"],
+        })]),
         LLMResponse(text="Implemented the division fix.", usage=Usage(6, 3)),
         evaluation_response(),
     ])
@@ -159,7 +188,7 @@ def test_issue_workflow_persists_plan_memory_review_and_evaluation(tmp_path) -> 
     assert report["evaluation"]["criteria"][0]["status"] == "pass"
     assert report["tests_passed"] is True
     assert report["regression_passed"] is True
-    assert report["iterations"] == result.iterations == 2
+    assert report["iterations"] == result.iterations == 4
     artifact_dir = result.report_path.parent
     assert list((artifact_dir / "tasks").glob("task_*.json"))
     assert (artifact_dir / "working-memory.json").is_file()
@@ -176,13 +205,31 @@ def test_issue_workflow_repairs_a_failed_first_attempt(tmp_path) -> None:
     repo = calculator_repo(tmp_path)
     llm = ScriptedLLM([
         analysis_response(), explorer_response(), plan_response(),
-        LLMResponse(tool_calls=[ToolCall("wrong", "edit_file", {
-            "path": "calculator.py", "old_text": "return a * b", "new_text": "return a - b",
-        })]),
-        LLMResponse(text="First attempt complete."),
+            LLMResponse(tool_calls=[ToolCall("wrong", "edit_file", {
+                "path": "calculator.py", "old_text": "return a * b", "new_text": "return a - b",
+            })]),
+            LLMResponse(tool_calls=[ToolCall("wrong-probe", "bash", {
+                "command": "python -c 'from calculator import divide; assert divide(8, 2) == 6'",
+                "evidence_for": "candidate-quotient",
+            })]),
+            LLMResponse(tool_calls=[ToolCall("wrong-evidence", "record_evidence", {
+                "check_key": "candidate-quotient", "verdict": "supported",
+                "observation": "The first attempt was inspected before evaluation",
+                "evidence": ["calculator.py:2"],
+            })]),
+            LLMResponse(text="First attempt complete."),
         evaluation_response("fail", "implementation subtracts instead of divides"),
         LLMResponse(tool_calls=[ToolCall("repair", "edit_file", {
             "path": "calculator.py", "old_text": "return a - b", "new_text": "return a / b",
+        })]),
+        LLMResponse(tool_calls=[ToolCall("repair-probe", "bash", {
+            "command": "python -c 'from calculator import divide; assert divide(8, 2) == 4'",
+            "evidence_for": "candidate-quotient",
+        })]),
+        LLMResponse(tool_calls=[ToolCall("repair-evidence", "record_evidence", {
+            "check_key": "candidate-quotient", "verdict": "supported",
+            "observation": "divide(8, 2) evaluates to 4 after the repair",
+            "evidence": ["calculator.py:2", "configured unittest"],
         })]),
         LLMResponse(text="Repair complete."),
         evaluation_response(),

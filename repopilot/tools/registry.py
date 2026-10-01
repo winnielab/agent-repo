@@ -24,6 +24,13 @@ class ToolRegistry:
     def get(self, name: str) -> Tool:
         return self._tools[name]
 
+    def names_with_capability(self, capability: str) -> set[str]:
+        """Discover tool behavior without teaching the runtime concrete names."""
+        return {
+            name for name, tool in self._tools.items()
+            if bool(getattr(tool, capability, False))
+        }
+
     def schemas(self, names: Iterable[str] = ()) -> List[Dict]:
         selected = set(names)
         return [tool.schema() for name, tool in self._tools.items() if not selected or name in selected]
@@ -43,4 +50,3 @@ class ToolRegistry:
             return ToolResult(False, f"Invalid arguments: {exc}", error_code="invalid_arguments")
         except Exception as exc:
             return ToolResult(False, f"Tool failed: {type(exc).__name__}: {exc}", error_code="tool_error")
-

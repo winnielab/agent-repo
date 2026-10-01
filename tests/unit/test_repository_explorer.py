@@ -107,3 +107,39 @@ def test_explorer_builds_task_focused_source_backed_slice(tmp_path) -> None:
     assert result.implementation_files == ["parser.py"]
     assert [item.key for item in result.observations] == ["definition_parse", "test_parse"]
     assert "Preserve false-like parser names" in llm.requests[0][0][-1].content
+
+
+def test_explorer_downgrades_temporal_phase_without_version_evidence(tmp_path) -> None:
+    (tmp_path / "app.py").write_text("LEGACY = True\n", encoding="utf-8")
+    llm = ScriptedLLM([
+        LLMResponse(tool_calls=[ToolCall("read", "read_file", {"path": "app.py"})]),
+        LLMResponse(text='''{
+          "language":"python","frameworks":[],"test_command":"pytest -q",
+          "important_files":["app.py"],"structure_summary":"one implementation file",
+          "build_system":"unknown","implementation_files":["app.py"],
+          "observations":[
+            {"key":"legacy_clause","kind":"definition","path":"app.py","line":1,
+             "symbol":"LEGACY","detail":"legacy behavior is still present"}
+          ],
+          "active_temporal_phase":"current",
+          "temporal_rationale":"The legacy clause is present.",
+          "temporal_evidence_keys":["legacy_clause"]
+        }'''),
+    ])
+    bus = EventBus("temporal-explorer")
+    runtime = AgentRuntime(
+        llm,
+        ToolRegistry([GlobTool(), ReadFileTool(), SearchCodeTool(), GitStatusTool()]),
+        PermissionManager(tmp_path),
+        bus,
+    )
+    explorer = RepositoryExplorer(
+        runtime,
+        ToolContext(tmp_path, LocalEnvironment(tmp_path), "temporal-explorer", bus),
+        tmp_path / "artifacts",
+    )
+
+    result = asyncio.run(explorer.inspect("pytest -q"))
+
+    assert result.active_temporal_phase == "unknown"
+    assert "checkout version or release phase" in result.temporal_rationale

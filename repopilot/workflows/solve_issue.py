@@ -37,6 +37,7 @@ from repopilot.task.specification import TaskSpecification
 from repopilot.task.intent import requests_test_changes
 from repopilot.tools.base import ToolContext
 from repopilot.tools.editing import DeleteFileTool, EditFileTool, WriteFileTool
+from repopilot.tools.evidence import RecordEvidenceTool
 from repopilot.tools.filesystem import GlobTool, ReadFileTool
 from repopilot.tools.git import GitDiffTool, GitStatusTool
 from repopilot.tools.registry import ToolRegistry
@@ -122,6 +123,9 @@ def _repository_evidence(workspace: Path, context: RepositoryContext,
         "test_files": context.test_files,
         "instruction_files": context.instruction_files,
         "observations": [item.to_dict() for item in context.observations],
+        "active_temporal_phase": context.active_temporal_phase,
+        "temporal_rationale": context.temporal_rationale,
+        "temporal_evidence_keys": context.temporal_evidence_keys,
         "important_file_contents": contents,
         "contract_lines": contract_lines,
         "normative_contracts": extract_normative_contracts(contents),
@@ -263,7 +267,8 @@ async def solve_issue(
         ])
         registry = ToolRegistry([
             GlobTool(), ReadFileTool(), SearchCodeTool(), WriteFileTool(), EditFileTool(),
-            DeleteFileTool(), BashTool(), test_tool, GitStatusTool(), GitDiffTool(),
+            DeleteFileTool(), BashTool(), RecordEvidenceTool(), test_tool,
+            GitStatusTool(), GitDiffTool(),
         ])
         permission = PermissionManager(workspace.path, config.allowed_command_prefixes, approval_callback)
         tool_context = ToolContext(workspace.path, environment, run_id, bus)
@@ -302,6 +307,16 @@ async def solve_issue(
         plan = await bounded(Planner(llm, bus, tracker).create_plan(
             specification, repository_context, repository_evidence,
         ))
+        tool_context.values["hypothesis_check_keys"] = [
+            item.key for item in plan.hypothesis_checks
+        ]
+        tool_context.values["hypothesis_check_kinds"] = {
+            item.key: item.kind for item in plan.hypothesis_checks
+        }
+        tool_context.values["required_verification_keys"] = [
+            item.key for item in plan.hypothesis_checks
+            if item.kind == "candidate_semantics"
+        ]
         plan_files = _plan_referenced_files(plan)
         repository_evidence = _repository_evidence(
             workspace.path, repository_context, extra_files=plan_files,
@@ -368,6 +383,12 @@ async def solve_issue(
             ],
         )
         repository_evidence["command_evidence"] = tool_context.values.get("command_evidence", [])
+        repository_evidence["verification_evidence"] = tool_context.values.get(
+            "verification_evidence", [],
+        )
+        repository_evidence["mutation_revision"] = int(
+            tool_context.values.get("mutation_revision", 0),
+        )
         for path in changed_files:
             memory.remember("relevant_files", path)
         reviewer = reviewer or PRReviewAdapter(artifact_dir / "review", mode="simple")
@@ -439,6 +460,12 @@ async def solve_issue(
                 ],
             )
             repository_evidence["command_evidence"] = tool_context.values.get("command_evidence", [])
+            repository_evidence["verification_evidence"] = tool_context.values.get(
+                "verification_evidence", [],
+            )
+            repository_evidence["mutation_revision"] = int(
+                tool_context.values.get("mutation_revision", 0),
+            )
             review_input = ReviewInput(
                 specification, plan, workspace.path, diff, tests, config.test_command,
                 config.command_timeout_seconds,

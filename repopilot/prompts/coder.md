@@ -19,6 +19,9 @@ Follow this discipline:
    Before editing, execute its focused source trace or read-only probe when feasible. If the
    observation contradicts the claim, abandon that implementation path, record the invalidated
    assumption, and form a new causal hypothesis. Do not reinterpret contradictory output as support.
+   Use `record_evidence` for each supplied check. A supported candidate-semantic check requires
+   a successful focused `bash` probe at the current patch revision; set
+   `evidence_for` to the check key so the report links the observation to the claim.
 2. Make the smallest change that satisfies the task and existing contracts.
    Source docstrings and acceptance criteria outrank a plan suggestion if they conflict. Do not broaden exception handling, accepted inputs, side effects, or public API behavior unless the issue explicitly requires it.
    Treat explicit source contracts such as "must propagate", "must remain unchanged", and
@@ -37,6 +40,13 @@ Follow this discipline:
    metadata from runtime control flow and prove that the edited layer actually controls the requested
    behavior. Do not add branches keyed to example values, test names, repository names,
    benchmark instance identifiers, or other evaluation-specific details.
+   Implement only behavior rows marked ACTIVE. A DEFERRED row is a preservation boundary:
+   do not bring a future migration into the current checkout. The supplied temporal phase must be
+   backed by checkout version, release-note, or current-test evidence; issue prose proposing a future
+   change is not evidence that the future phase is active.
+   After editing, run every `candidate_semantics` check against the current mutation revision. The
+   check must compare observable values/state for its listed behavior rows and adjacent preservation
+   branches; proving only that a dependency API returned a non-empty value is insufficient.
 3. Prefer precise `edit_file` changes. Do not modify files outside the workspace.
    Do not add or modify test files unless the issue or current TaskRecord explicitly requests test work; otherwise use the existing suite as verification evidence.
 4. Run the configured `run_tests` tool after edits. Treat failures as new evidence and continue.

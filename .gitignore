@@ -9,7 +9,9 @@ build/
 *.egg-info/
 .repopilot-worktrees/
 agent-rep/.env.example
-docs
+docs/*
+!docs/RepoPilot_Stage2_架构复查与改进_20261001.md
+agent-rep/docs/
 benchmarks
 reports
 .idea/

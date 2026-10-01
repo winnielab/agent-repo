@@ -19,6 +19,27 @@ from repopilot.tools.base import ToolContext
 from repopilot.tools.registry import ToolRegistry
 
 
+def _missing_required_verification(tool_context: ToolContext) -> list[str]:
+    """Return checks without supported evidence for the current candidate revision."""
+    required = {
+        str(key) for key in tool_context.values.get("required_verification_keys", []) if str(key)
+    }
+    if not required:
+        return []
+    revision = int(tool_context.values.get("mutation_revision", 0))
+    records = {
+        str(item.get("check_key")): item
+        for item in tool_context.values.get("verification_evidence", [])
+        if isinstance(item, dict) and item.get("check_key")
+    }
+    return sorted(
+        key for key in required
+        if key not in records
+        or records[key].get("verdict") != "supported"
+        or int(records[key].get("mutation_revision", -1)) != revision
+    )
+
+
 @dataclass(frozen=True)
 class RuntimeLimits:
     max_iterations: int = 30
@@ -64,8 +85,10 @@ class AgentRuntime:
         mutation_reminders = 0
         readonly_reminder = False
         completion_deferred = False
+        verification_reminder: tuple[str, ...] = ()
         last_input_tokens = 0
-        mutation_tools = {"write_file", "edit_file", "delete_file"}
+        mutation_tools = self.registry.names_with_capability("mutates_workspace")
+        validation_tools = self.registry.names_with_capability("validates_workspace")
         coding_agent = bool(mutation_tools.intersection(agent.tool_names))
         readonly_agent = bool(agent.tool_names) and not coding_agent
         self.event_bus.emit("agent_loop_started", agent=agent.name, task=task.description)
@@ -118,9 +141,11 @@ class AgentRuntime:
                         threshold=self.limits.max_no_mutation_iterations + 3,
                         final=True,
                     )
+                missing_verification = _missing_required_verification(tool_context)
                 if (successful_test_iteration is not None
                         and iterations - successful_test_iteration
-                        >= self.limits.max_post_test_iterations):
+                        >= self.limits.max_post_test_iterations
+                        and not missing_verification):
                     self.event_bus.emit(
                         "agent_auto_stopped",
                         reason="post_test_iteration_limit",
@@ -131,6 +156,23 @@ class AgentRuntime:
                     self.event_bus.emit("agent_loop_finished", status=result.status,
                                         duration_seconds=elapsed)
                     return result
+                if (successful_test_iteration is not None
+                        and iterations - successful_test_iteration
+                        >= self.limits.max_post_test_iterations
+                        and missing_verification
+                        and tuple(missing_verification) != verification_reminder):
+                    verification_reminder = tuple(missing_verification)
+                    context.add_observation(
+                        "Completion gate: tests passed, but these required candidate-semantic "
+                        "checks lack supported evidence at the current mutation revision: "
+                        f"{', '.join(missing_verification)}. Run the focused probes/source traces "
+                        "and call record_evidence before finishing."
+                    )
+                    self.event_bus.emit(
+                        "agent_verification_completion_deferred",
+                        checks=missing_verification,
+                        mutation_revision=int(tool_context.values.get("mutation_revision", 0)),
+                    )
                 limit_reason = None
                 if iterations >= self.limits.max_iterations:
                     limit_reason = "max_iterations"
@@ -246,6 +288,22 @@ class AgentRuntime:
                             error=result.error, duration_seconds=time.monotonic() - started,
                         )
                         return result
+                    missing_verification = _missing_required_verification(tool_context)
+                    if coding_agent and missing_verification:
+                        context.add_observation(
+                            "Completion is blocked until supported, revision-current evidence is "
+                            "recorded for: " + ", ".join(missing_verification)
+                            + ". Use the planned falsification checks and record_evidence; if a "
+                            "check is contradicted, revise the implementation."
+                        )
+                        self.event_bus.emit(
+                            "agent_verification_completion_deferred",
+                            checks=missing_verification,
+                            mutation_revision=int(
+                                tool_context.values.get("mutation_revision", 0)
+                            ),
+                        )
+                        continue
                     await self.hooks.run(HookEvent.STOP, final_text=final_text, iterations=iterations)
                     result = AgentResult("completed", final_text, iterations, self.usage.usage)
                     self.event_bus.emit("agent_loop_finished", status=result.status,
@@ -311,7 +369,7 @@ class AgentRuntime:
                                         duration_seconds=duration, permission="allow")
                     await self.hooks.run(HookEvent.POST_TOOL_USE, call=call, result=result)
                     context.add_tool_result(call, json.dumps(result.to_dict(), ensure_ascii=False))
-                    if call.name == "run_tests":
+                    if call.name in validation_tools:
                         successful_test_iteration = iterations if result.ok else None
                     elif result.ok and call.name in mutation_tools:
                         # Any repository mutation invalidates the previous test result.

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterable, Optional
 
 from repopilot.core.models import Message
 from repopilot.core.structured import parse_json_object
@@ -24,9 +24,36 @@ class Planner:
         self.usage = usage
 
     @staticmethod
+    def _behavior_partition(
+        specification: TaskSpecification,
+        repository: Optional[RepositoryContext],
+    ) -> tuple[list[str], list[str], str]:
+        phase = repository.active_temporal_phase if repository else "unknown"
+        active: list[str] = []
+        deferred: list[str] = []
+        for item in specification.behavior_cases:
+            if item.temporal_scope == "always":
+                active.append(item.key)
+            elif phase == "future":
+                (active if item.temporal_scope == "future" else deferred).append(item.key)
+            else:
+                # Unknown is deliberately conservative: do not implement a future
+                # migration without checkout evidence that its activation point has
+                # been reached.
+                (active if item.temporal_scope == "current" else deferred).append(item.key)
+        rationale = (
+            repository.temporal_rationale
+            if repository and repository.temporal_rationale.strip()
+            else f"Checkout temporal phase is {phase}; future-only changes remain deferred."
+        )
+        return active, deferred, rationale
+
+    @staticmethod
     def fallback(specification: TaskSpecification,
                  repository: Optional[RepositoryContext] = None) -> Plan:
-        behavior_keys = [item.key for item in specification.behavior_cases]
+        behavior_keys, deferred_keys, temporal_rationale = Planner._behavior_partition(
+            specification, repository,
+        )
         evidence_keys = [item.key for item in (repository.observations if repository else [])]
         impact_surface = list(dict.fromkeys(
             value
@@ -52,8 +79,127 @@ class Planner:
                 "The proposed earliest invariant is the first point that contradicts the requested behavior.",
                 "Trace one issue-described input through the definition, a caller or state transition, and the observable output; use a focused read-only probe when source semantics are ambiguous, and reject the claim if an earlier divergence appears.",
                 evidence_keys,
+                "dependency_fact",
+                [],
+            ), HypothesisCheck(
+                "verify-candidate-semantics",
+                "The candidate patch satisfies every active behavior while preserving adjacent branches.",
+                "After editing, exercise representative positive, negative, boundary, preservation, state-effect, and temporal cases from the active behavior contract; compare semantic values or state rather than only checking that an API returned something, and reject the patch on any mismatch.",
+                evidence_keys,
+                "candidate_semantics",
+                behavior_keys,
             )] if behavior_keys else [],
+            behavior_keys,
+            deferred_keys,
+            temporal_rationale,
         )
+
+    @staticmethod
+    def _unique_known(values: Iterable[Any], known: set[str]) -> list[str]:
+        return list(dict.fromkeys(
+            value for item in values
+            if (value := str(item).strip()) and value in known
+        ))
+
+    @classmethod
+    def _recover_partial_plan(
+        cls,
+        data: Dict[str, Any],
+        specification: TaskSpecification,
+        repository: RepositoryContext,
+    ) -> Plan:
+        """Preserve valid model evidence and repair only invalid schema fragments."""
+        fallback = cls.fallback(specification, repository)
+        active = list(fallback.active_behavior_keys)
+        deferred = list(fallback.deferred_behavior_keys)
+        active_set = set(active)
+        evidence_set = {item.key for item in repository.observations}
+
+        steps: list[PlanStep] = []
+        seen = set()
+        for raw in data.get("steps", []) if isinstance(data.get("steps", []), list) else []:
+            if not isinstance(raw, dict):
+                continue
+            key = str(raw.get("key", "")).strip()
+            title = str(raw.get("title", "")).strip()
+            description = str(raw.get("description", "")).strip()
+            if not key or key in seen or not title or not description:
+                continue
+            seen.add(key)
+            steps.append(PlanStep(
+                key, title, description,
+                [str(item).strip() for item in raw.get("dependencies", []) if str(item).strip()],
+                cls._unique_known(raw.get("behavior_keys", []), active_set),
+                cls._unique_known(raw.get("evidence_keys", []), evidence_set),
+            ))
+        if steps:
+            known_steps = {item.key for item in steps}
+            steps = [PlanStep(
+                item.key, item.title, item.description,
+                [dep for dep in item.dependencies if dep in known_steps and dep != item.key],
+                item.behavior_keys, item.evidence_keys,
+            ) for item in steps]
+            try:
+                steps = cls._without_nonimplementation_steps(
+                    steps, allow_test_changes=cls._requests_test_changes(specification),
+                )
+            except ValueError:
+                steps = []
+        if not steps:
+            steps = list(fallback.steps)
+        covered = {key for item in steps for key in item.behavior_keys}
+        missing = [key for key in active if key not in covered]
+        if missing:
+            first = steps[0]
+            steps[0] = PlanStep(
+                first.key, first.title, first.description, first.dependencies,
+                list(dict.fromkeys([*first.behavior_keys, *missing])),
+                first.evidence_keys,
+            )
+
+        checks: list[HypothesisCheck] = []
+        seen_checks = set()
+        raw_checks = data.get("hypothesis_checks", [])
+        for raw in raw_checks if isinstance(raw_checks, list) else []:
+            if not isinstance(raw, dict):
+                continue
+            key = str(raw.get("key", "")).strip()
+            claim = str(raw.get("claim", "")).strip()
+            falsification = str(raw.get("falsification", "")).strip()
+            kind = str(raw.get("kind", "dependency_fact")).strip()
+            if (not key or key in seen_checks or not claim or not falsification
+                    or kind not in HypothesisCheck.KINDS):
+                continue
+            seen_checks.add(key)
+            checks.append(HypothesisCheck(
+                key, claim, falsification,
+                cls._unique_known(raw.get("evidence_keys", []), evidence_set),
+                kind,
+                cls._unique_known(raw.get("behavior_keys", []), active_set),
+            ))
+        semantic_coverage = {
+            key for item in checks if item.kind == "candidate_semantics"
+            for key in item.behavior_keys
+        }
+        if set(active) - semantic_coverage:
+            checks.append(fallback.hypothesis_checks[-1])
+        if not any(item.kind == "dependency_fact" for item in checks) and active:
+            checks.insert(0, fallback.hypothesis_checks[0])
+
+        plan = Plan(
+            str(data.get("summary", "")).strip() or fallback.summary,
+            steps,
+            str(data.get("root_cause_hypothesis", "")).strip() or fallback.root_cause_hypothesis,
+            str(data.get("earliest_invariant", "")).strip() or fallback.earliest_invariant,
+            [str(item).strip() for item in data.get("impact_surface", []) if str(item).strip()]
+            or fallback.impact_surface,
+            checks,
+            active,
+            deferred,
+            fallback.temporal_rationale,
+        )
+        plan.validate(active + deferred, evidence_set)
+        return plan
 
     @staticmethod
     def _requests_test_changes(specification: TaskSpecification) -> bool:
@@ -139,6 +285,15 @@ class Planner:
             "task": specification.to_dict(),
             "repository": repository.to_dict(),
             "repository_evidence": repository_evidence or {},
+            "temporal_contract": {
+                "active_phase": repository.active_temporal_phase,
+                "rationale": repository.temporal_rationale,
+                "evidence_keys": repository.temporal_evidence_keys,
+                "default_partition": {
+                    "active_behavior_keys": self._behavior_partition(specification, repository)[0],
+                    "deferred_behavior_keys": self._behavior_partition(specification, repository)[1],
+                },
+            },
             "schema": {
                 "summary": "string",
                 "root_cause_hypothesis": "causal explanation grounded in repository evidence",
@@ -149,6 +304,8 @@ class Planner:
                     "claim": "a material root-cause assumption",
                     "falsification": "specific source trace or focused read-only probe that could disprove it",
                     "evidence_keys": ["repository observation keys supporting the check"],
+                    "kind": "dependency_fact|candidate_semantics",
+                    "behavior_keys": ["active behavior keys covered by candidate-semantic checks"],
                 }],
                 "steps": [{"key": "short-unique-key", "title": "string",
                            "description": "actionable coding task", "dependencies": ["earlier-key"],
@@ -159,7 +316,7 @@ class Planner:
         self.event_bus.emit("planning_started")
         try:
             response = await self.llm.generate([
-                Message("system", "Create a small executable coding plan. Return JSON only. State a repository-grounded root_cause_hypothesis and the earliest_invariant whose first violation explains the behavior; prefer fixing that earliest point over a late output-layer workaround. For every behavior-aware plan, add at least one hypothesis_check naming a material claim and a concrete source trace or focused read-only probe that could disprove it. A check must be capable of changing the implementation plan; repeating the claim is not falsification. Cite repository observation keys for implementation claims and checks, and list the impact_surface that must remain compatible, including callers, state transitions, and failure paths supported by the evidence. Map every supplied behavior case key to at least one implementation step. Plan implementation work, plus test-writing only when the issue explicitly requests tests or coverage. Never modify tests merely to prove a fix. The workflow runs the configured suite after all workers, so never create a standalone run/verify/check step. Treat positive, negative, temporal/version, preservation, and state-effect requirements literally. Prefer the narrowest behavior change, never add input-specific branches merely to satisfy examples, and never broaden exception handling or public API behavior unless explicitly required. Every dependency/framework symbol used by the plan must be verifiable in the current checkout."),
+                Message("system", "Create a small executable coding plan. Return JSON only. State a repository-grounded root_cause_hypothesis and the earliest_invariant whose first violation explains the behavior; prefer fixing that earliest point over a late output-layer workaround. Respect temporal_contract.default_partition: implementation steps cover every active behavior key and must not implement deferred future behavior. For every behavior-aware plan, add two kinds of hypothesis_check: dependency_fact checks challenge facts about the current code/API before editing, while candidate_semantics checks challenge the proposed transformation after editing against representative active, negative, boundary, preservation, state-effect, and temporal branches. Every active behavior key must be covered by a candidate_semantics check. A check must be capable of changing the implementation plan; repeating the claim or merely proving an API returns a value is not falsification. Cite repository observation keys for implementation claims and checks, and list the impact_surface that must remain compatible, including callers, state transitions, and failure paths supported by the evidence. Plan implementation work, plus test-writing only when the issue explicitly requests tests or coverage. Never modify tests merely to prove a fix. The workflow runs the configured suite after all workers, so never create a standalone run/verify/check step. Treat positive, negative, temporal/version, preservation, and state-effect requirements literally. Prefer the narrowest behavior change, never add input-specific branches merely to satisfy examples, and never broaden exception handling or public API behavior unless explicitly required. Every dependency/framework symbol used by the plan must be verifiable in the current checkout."),
                 Message("user", json.dumps(payload, ensure_ascii=False)),
             ])
             self.usage.add_usage(response.usage)
@@ -180,7 +337,12 @@ class Planner:
                 claim=str(item["claim"]).strip(),
                 falsification=str(item["falsification"]).strip(),
                 evidence_keys=[str(key).strip() for key in item.get("evidence_keys", [])],
+                kind=str(item.get("kind", "dependency_fact")).strip(),
+                behavior_keys=[str(key).strip() for key in item.get("behavior_keys", [])],
             ) for item in data.get("hypothesis_checks", [])]
+            active, deferred, temporal_rationale = self._behavior_partition(
+                specification, repository,
+            )
             plan = Plan(
                 str(data["summary"]).strip(),
                 steps,
@@ -188,6 +350,9 @@ class Planner:
                 str(data.get("earliest_invariant", "")).strip(),
                 [str(item).strip() for item in data.get("impact_surface", []) if str(item).strip()],
                 checks,
+                active,
+                deferred,
+                temporal_rationale,
             )
             plan.validate(
                 (item.key for item in specification.behavior_cases),
@@ -196,7 +361,20 @@ class Planner:
             self.event_bus.emit("planning_finished", fallback=False, steps=len(steps))
             return plan
         except Exception as exc:
-            plan = self.fallback(specification, repository)
-            self.event_bus.emit("planning_finished", fallback=True, steps=1,
-                                error=f"{type(exc).__name__}: {exc}")
-            return plan
+            try:
+                if "data" not in locals() or not isinstance(data, dict):
+                    raise ValueError("no parseable planning object")
+                plan = self._recover_partial_plan(data, specification, repository)
+                self.event_bus.emit(
+                    "planning_finished", fallback=False, recovered=True,
+                    steps=len(plan.steps), error=f"{type(exc).__name__}: {exc}",
+                )
+                return plan
+            except Exception as recovery_exc:
+                plan = self.fallback(specification, repository)
+                self.event_bus.emit(
+                    "planning_finished", fallback=True, recovered=False, steps=1,
+                    error=(f"{type(exc).__name__}: {exc}; recovery failed: "
+                           f"{type(recovery_exc).__name__}: {recovery_exc}"),
+                )
+                return plan
