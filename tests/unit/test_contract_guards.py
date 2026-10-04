@@ -91,3 +91,19 @@ new file mode 100644
     assert [(item["kind"], item["file"]) for item in violations] == [
         ("temporary_artifact", "probe_test_fixture.py"),
     ]
+
+
+def test_patch_hygiene_blocks_probe_marker_inside_artifact_name() -> None:
+    diff = """diff --git a/tcprobe_mod_tc.py b/tcprobe_mod_tc.py
+new file mode 100644
+--- /dev/null
++++ b/tcprobe_mod_tc.py
+@@ -0,0 +1 @@
++print('probe')
+"""
+
+    violations = patch_hygiene_violations(diff, allow_test_changes=True)
+
+    assert [(item["kind"], item["file"]) for item in violations] == [
+        ("temporary_artifact", "tcprobe_mod_tc.py"),
+    ]

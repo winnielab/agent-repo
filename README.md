@@ -6,6 +6,26 @@ tools, persists a task DAG and working memory, runs focused Coder workers,
 reuses the existing PR review agent, evaluates acceptance criteria, and performs
 bounded repair passes inside an isolated Git worktree.
 
+Stage 3 is available as an explicit end-to-end workflow. It shares one
+Analyze/Explore/Plan pass, executes each ready TaskGraph frontier through a
+lease-backed `AgentCoordinator`, gives every worker an isolated worktree and
+runtime, atomically merges hash-validated patches, verifies the merged wave,
+and only then releases dependent tasks. Conflict consolidation, pre-merge patch
+hygiene, partial-patch preservation, per-worker evidence, and run manifests are
+part of this path. The Stage 2 workflow remains the default for compatibility;
+select Stage 3 explicitly:
+
+```bash
+repopilot solve --repo ./demo --task "Fix divide() so all tests pass" \
+  --test-command "python -m unittest discover -v" \
+  --provider deepseek --model deepseek-chat \
+  --workflow stage3 --max-concurrency 2 --max-worker-tokens 350000
+```
+
+The lower-level hash-chained workflow journal and atomic checkpoint runtime are
+also available, but a public `repopilot resume RUN_ID` command is not yet
+shipped.
+
 ```bash
 export DEEPSEEK_API_KEY=...
 repopilot solve --repo ./demo --task "Fix divide() so all tests pass" \
@@ -124,3 +144,12 @@ continuation protocol are tracked in
 repository-comprehension design and the path-verified v6 failed-PR regression
 are documented in
 [the comprehension regression report](docs/RepoPilot_项目理解与失败PR回归_20260930.md).
+The Stage 3 infrastructure foundation is recorded in
+[the Stage 3 infrastructure report](docs/RepoPilot_Stage3_基础设施实现_20261001.md).
+The completed Coordinator, defects found by real execution, and five-task
+SWE-bench rerun are documented in
+[the Stage 3 Coordinator report](docs/RepoPilot_Stage3_Coordinator实现与五项复测_20261001.md).
+The frozen DeepSeek V4 Flash evaluation of the remaining eleven runnable images,
+including provider-fallback telemetry and the resulting design issue backlog, is
+documented in
+[the Stage 3 V4 Flash report](docs/RepoPilot_Stage3_剩余十一项_V4Flash评测与问题分析_20261004.md).

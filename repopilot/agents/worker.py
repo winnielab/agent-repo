@@ -24,6 +24,21 @@ class WorkerResult(Serializable):
     final_text: str
     iterations: int
     error: str = ""
+    workspace_id: str = ""
+    base_commit: str = ""
+    patch_path: str = ""
+    patch_sha256: str = ""
+    result_commit: str = ""
+    changed_files: tuple[str, ...] = ()
+    tests: Optional[Dict[str, Any]] = None
+    agent_session_id: str = ""
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cached_tokens: int = 0
+    cost: Optional[float] = None
+    tool_calls: int = 0
+    command_evidence: tuple[Dict[str, Any], ...] = ()
+    verification_evidence: tuple[Dict[str, Any], ...] = ()
 
 
 class CoderWorker:

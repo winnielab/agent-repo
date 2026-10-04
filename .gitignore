@@ -11,6 +11,10 @@ build/
 agent-rep/.env.example
 docs/*
 !docs/RepoPilot_Stage2_架构复查与改进_20261001.md
+!docs/RepoPilot_Stage3_基础设施实现_20261001.md
+!docs/RepoPilot_Stage3_前五项SWEbench评测_20261001.md
+!docs/RepoPilot_Stage3_Coordinator实现与五项复测_20261001.md
+!docs/RepoPilot_Stage3_剩余十一项_V4Flash评测与问题分析_20261004.md
 agent-rep/docs/
 benchmarks
 reports

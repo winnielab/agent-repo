@@ -11,6 +11,10 @@ from repopilot.workflows.solve_issue import (
     _worker_token_ceiling,
     solve_issue,
 )
+from repopilot.workflows.solve_issue_stage3 import (
+    _explorer_token_ceiling,
+    solve_issue_stage3,
+)
 
 
 def git(repo, *args):
@@ -199,6 +203,192 @@ def test_issue_workflow_persists_plan_memory_review_and_evaluation(tmp_path) -> 
         "task_analysis_finished", "repository_explored", "planning_finished",
         "review_finished", "goal_evaluation_finished", "issue_run_finished",
     } <= event_types
+
+
+def test_stage3_coordinator_runs_isolated_worker_merges_and_reports(tmp_path) -> None:
+    repo = calculator_repo(tmp_path)
+    original = (repo / "calculator.py").read_text(encoding="utf-8")
+    llm = ScriptedLLM([
+        analysis_response(), explorer_response(), plan_response(),
+        LLMResponse(tool_calls=[ToolCall("edit", "edit_file", {
+            "path": "calculator.py", "old_text": "return a * b", "new_text": "return a / b",
+        })], usage=Usage(8, 2)),
+        LLMResponse(tool_calls=[ToolCall("probe", "bash", {
+            "command": "python -c 'from calculator import divide; assert divide(8, 2) == 4'",
+            "evidence_for": "candidate-quotient",
+        })]),
+        LLMResponse(tool_calls=[ToolCall("evidence", "record_evidence", {
+            "check_key": "candidate-quotient", "verdict": "supported",
+            "observation": "divide(8, 2) evaluates to 4 after the edit",
+            "evidence": ["calculator.py:2", "focused probe"],
+        })]),
+        LLMResponse(text="Implemented the division fix.", usage=Usage(6, 3)),
+        evaluation_response(),
+    ])
+    stage3_config = RepoPilotConfig(
+        test_command="python -m unittest discover -v",
+        worktree_parent=tmp_path / "stage3-worktrees",
+        keep_worktree=True,
+        max_repair_iterations=0,
+        max_concurrency=2,
+        max_worker_tokens=100_000,
+    )
+
+    result = asyncio.run(solve_issue_stage3(
+        repo, "Fix divide", llm, stage3_config,
+        reviewer=approve_reviewer(tmp_path), run_id="stage3-success",
+    ))
+
+    assert result.success
+    assert result.tests["ok"] is True
+    assert result.changed_files == ["calculator.py"]
+    assert "return a / b" in result.diff
+    assert (repo / "calculator.py").read_text(encoding="utf-8") == original
+    assert result.workers[0].workspace_id
+    assert result.workers[0].patch_sha256
+    report = json.loads(result.report_path.read_text(encoding="utf-8"))
+    assert report["orchestration"]["mode"] == "stage3-coordinator"
+    assert report["orchestration"]["waves"] == 1
+    assert report["tasks"][0]["result_commit"]
+    assert (result.report_path.parent / "stage3-manifest.json").is_file()
+
+
+def test_stage3_explorer_preserves_implementation_and_repair_budget() -> None:
+    config = RepoPilotConfig(
+        max_tokens=200_000,
+        max_explorer_tokens=120_000,
+        finalization_token_reserve=30_000,
+        evaluation_token_reserve=20_000,
+        repair_token_reserve=40_000,
+        max_repair_iterations=2,
+    )
+
+    ceiling = _explorer_token_ceiling(config, used_tokens=10_000)
+
+    assert ceiling == 43_333
+    assert config.max_tokens - ceiling == 156_667
+
+
+def test_issue_workflow_preserves_patch_when_worker_hits_limit_after_edit(tmp_path) -> None:
+    repo = calculator_repo(tmp_path)
+    llm = ScriptedLLM([
+        analysis_response(), explorer_response(), plan_response(),
+        LLMResponse(tool_calls=[ToolCall("edit", "edit_file", {
+            "path": "calculator.py", "old_text": "return a * b", "new_text": "return a / b",
+        })]),
+        evaluation_response(),
+    ])
+    limited = RepoPilotConfig(
+        test_command="python -m unittest discover -v",
+        worktree_parent=tmp_path / "limited-worktrees",
+        keep_worktree=True,
+        max_iterations=1,
+        max_repair_iterations=0,
+    )
+
+    result = asyncio.run(solve_issue(
+        repo, "Fix divide", llm, limited,
+        reviewer=approve_reviewer(tmp_path), run_id="stage2-partial-patch",
+    ))
+
+    assert result.workers[0].status == "limit_reached"
+    assert result.changed_files == ["calculator.py"]
+    assert "return a / b" in result.diff
+    assert result.diff_path is not None and result.diff_path.is_file()
+
+
+def test_stage3_consolidates_overlapping_parallel_candidates(tmp_path) -> None:
+    repo = calculator_repo(tmp_path)
+    conflict_plan = LLMResponse(text=json.dumps({
+        "summary": "Two candidate arithmetic changes require consolidation.",
+        "root_cause_hypothesis": "the multiplication operator is wrong",
+        "earliest_invariant": "divide returns a quotient",
+        "hypothesis_checks": [],
+        "steps": [{
+            "key": "candidate-a", "title": "Candidate A",
+            "description": "Correct the arithmetic implementation.",
+            "dependencies": [], "behavior_keys": ["quotient"],
+        }, {
+            "key": "candidate-b", "title": "Candidate B",
+            "description": "Correct the arithmetic implementation independently.",
+            "dependencies": [], "behavior_keys": ["quotient"],
+        }],
+    }))
+    llm = ScriptedLLM([
+        analysis_response(), explorer_response(), conflict_plan,
+        LLMResponse(tool_calls=[ToolCall("a", "edit_file", {
+            "path": "calculator.py", "old_text": "return a * b", "new_text": "return a + b",
+        })]),
+        LLMResponse(tool_calls=[ToolCall("b", "edit_file", {
+            "path": "calculator.py", "old_text": "return a * b", "new_text": "return a - b",
+        })]),
+        LLMResponse(tool_calls=[ToolCall("resolve", "edit_file", {
+            "path": "calculator.py", "old_text": "return a * b", "new_text": "return a / b",
+        })]),
+        evaluation_response(),
+    ])
+    stage3_config = RepoPilotConfig(
+        test_command="python -m unittest discover -v",
+        worktree_parent=tmp_path / "conflict-worktrees",
+        keep_worktree=True,
+        max_repair_iterations=0,
+        max_concurrency=1,
+        max_tokens=400_000,
+        max_worker_tokens=80_000,
+        repair_token_reserve=80_000,
+        max_iterations=1,
+    )
+
+    result = asyncio.run(solve_issue_stage3(
+        repo, "Fix divide", llm, stage3_config,
+        reviewer=approve_reviewer(tmp_path), run_id="stage3-conflict",
+    ))
+
+    assert "return a / b" in result.diff
+    assert result.tests["ok"] is True
+    assert len(result.workers) == 3
+    report = json.loads(result.report_path.read_text(encoding="utf-8"))
+    assert report["orchestration"]["conflict_repairs"] == 1
+    assert report["orchestration"]["waves"] == 2
+    assert any(item["status"] == "completed" for item in report["tasks"])
+
+
+def test_stage3_rejects_scratch_patch_and_schedules_clean_consolidation(tmp_path) -> None:
+    repo = calculator_repo(tmp_path)
+    llm = ScriptedLLM([
+        analysis_response(), explorer_response(), plan_response(),
+        LLMResponse(tool_calls=[ToolCall("probe", "write_file", {
+            "path": "probe_divide.py", "content": "from calculator import divide\n",
+        })]),
+        LLMResponse(tool_calls=[ToolCall("fix", "edit_file", {
+            "path": "calculator.py", "old_text": "return a * b", "new_text": "return a / b",
+        })]),
+        evaluation_response(),
+    ])
+    stage3_config = RepoPilotConfig(
+        test_command="python -m unittest discover -v",
+        worktree_parent=tmp_path / "hygiene-worktrees",
+        keep_worktree=True,
+        max_repair_iterations=0,
+        max_iterations=1,
+        max_tokens=300_000,
+        max_worker_tokens=80_000,
+    )
+
+    result = asyncio.run(solve_issue_stage3(
+        repo, "Fix divide", llm, stage3_config,
+        reviewer=approve_reviewer(tmp_path), run_id="stage3-hygiene",
+    ))
+
+    assert result.tests["ok"] is True
+    assert "return a / b" in result.diff
+    assert "probe_divide.py" not in result.diff
+    report = json.loads(result.report_path.read_text(encoding="utf-8"))
+    assert report["orchestration"]["hygiene_repairs"] == 1
+    assert any(
+        "patch hygiene rejected" in (item.get("error") or "")
+        for item in report["tasks"]
+    )
 
 
 def test_issue_workflow_repairs_a_failed_first_attempt(tmp_path) -> None:

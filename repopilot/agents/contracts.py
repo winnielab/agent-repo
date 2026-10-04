@@ -23,7 +23,7 @@ _MUST_NOT_CATCH = re.compile(
     re.IGNORECASE,
 )
 _TEMPORARY_ARTIFACT = re.compile(
-    r"(?:^|/)(?:(?:debug|scratch|probe|repro(?:duce)?|experiment|manual[_-]?check|run)[_-][^/]+"
+    r"(?:^|/)(?:[^/]*(?:debug|scratch|probe|repro(?:duce)?|experiment|manual[_-]?check|run)[_-][^/]+"
     r"\.(?:py|sh|txt|json)|[^/]+\.(?:log|out|tmp))$",
     re.IGNORECASE,
 )

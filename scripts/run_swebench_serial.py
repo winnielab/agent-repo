@@ -278,6 +278,8 @@ def run_one(task: dict, args: argparse.Namespace, manifest: dict,
         "--max-explorer-iterations", str(args.max_explorer_iterations),
         "--max-explorer-tool-calls", str(args.max_explorer_tool_calls),
         "--max-explorer-tokens", str(args.max_explorer_tokens),
+        "--max-worker-tokens", str(args.max_worker_tokens),
+        "--max-concurrency", str(args.max_concurrency),
         "--context-char-budget", str(args.context_char_budget),
         "--large-tool-result-chars", str(args.large_tool_result_chars),
         "--execution-image", task["image"], "--execution-platform", "linux/amd64",
@@ -285,6 +287,7 @@ def run_one(task: dict, args: argparse.Namespace, manifest: dict,
         "--max-runtime-seconds", str(args.max_runtime_seconds),
         "--command-timeout-seconds", str(args.command_timeout_seconds),
         "--max-repair-iterations", str(args.max_repair_iterations), "--cleanup",
+        "--workflow", args.workflow,
     ]
     if args.baseline_aware_tests:
         solve_command.append("--baseline-aware-tests")
@@ -420,6 +423,9 @@ def main() -> int:
     parser.add_argument("--max-explorer-iterations", type=int, default=12)
     parser.add_argument("--max-explorer-tool-calls", type=int, default=40)
     parser.add_argument("--max-explorer-tokens", type=int, default=120_000)
+    parser.add_argument("--max-worker-tokens", type=int, default=180_000)
+    parser.add_argument("--max-concurrency", type=int, default=1)
+    parser.add_argument("--workflow", choices=("issue", "stage3"), default="issue")
     parser.add_argument("--context-char-budget", type=int, default=60_000)
     parser.add_argument("--large-tool-result-chars", type=int, default=8_000)
     parser.add_argument("--baseline-aware-tests", action=argparse.BooleanOptionalAction,

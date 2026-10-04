@@ -12,6 +12,7 @@ from pathlib import Path
 from repopilot.config import RepoPilotConfig
 from repopilot.llm.openai_compatible import OpenAICompatibleClient, deepseek_from_environment
 from repopilot.workflows.solve_issue import solve_issue
+from repopilot.workflows.solve_issue_stage3 import solve_issue_stage3
 from repopilot.workflows.solve_task import solve_task
 
 
@@ -44,6 +45,10 @@ def build_parser() -> argparse.ArgumentParser:
                        help="request read-only repository exploration finalization after this many turns")
     solve.add_argument("--max-explorer-tool-calls", type=int, default=40)
     solve.add_argument("--max-explorer-tokens", type=int, default=120_000)
+    solve.add_argument("--max-worker-tokens", type=int, default=180_000,
+                       help="per-worker token ceiling for the Stage 3 coordinator")
+    solve.add_argument("--max-concurrency", type=int, default=1,
+                       help="maximum isolated Stage 3 workers in one frontier")
     solve.add_argument("--context-char-budget", type=int, default=80_000)
     solve.add_argument("--large-tool-result-chars", type=int, default=12_000)
     solve.add_argument("--baseline-aware-tests", action="store_true",
@@ -66,8 +71,8 @@ def build_parser() -> argparse.ArgumentParser:
     solve.add_argument("--max-runtime-seconds", type=float, default=120.0)
     solve.add_argument("--command-timeout-seconds", type=float, default=30.0)
     solve.add_argument("--worktree-parent", type=Path)
-    solve.add_argument("--workflow", choices=("issue", "task"), default="issue",
-                       help="issue runs Stage 2 planning/review/evaluation; task runs the Stage 1 coder")
+    solve.add_argument("--workflow", choices=("issue", "stage3", "task"), default="issue",
+                       help="stage3 runs isolated coordinator waves; issue runs the Stage 2 flow")
     solve.add_argument("--max-repair-iterations", type=int, default=3)
     solve.add_argument("--max-cost", type=float)
     solve.add_argument("--cleanup", action="store_true", help="remove the worktree after collecting its patch")
@@ -94,6 +99,8 @@ async def _solve(args: argparse.Namespace) -> int:
         max_explorer_iterations=args.max_explorer_iterations,
         max_explorer_tool_calls=args.max_explorer_tool_calls,
         max_explorer_tokens=args.max_explorer_tokens,
+        max_worker_tokens=args.max_worker_tokens,
+        max_concurrency=args.max_concurrency,
         execution_image=args.execution_image,
         execution_platform=args.execution_platform,
         execution_setup_command=args.execution_setup_command,
@@ -117,6 +124,14 @@ async def _solve(args: argparse.Namespace) -> int:
         success = result.agent.success
         changed_files = result.agent.changed_files
         error = result.agent.error
+    elif args.workflow == "stage3":
+        result = await solve_issue_stage3(
+            args.repo, args.task, client, config=config, run_id=args.run_id,
+        )
+        status = result.status
+        success = result.success
+        changed_files = result.changed_files
+        error = result.error
     else:
         result = await solve_issue(args.repo, args.task, client, config=config, run_id=args.run_id)
         status = result.status

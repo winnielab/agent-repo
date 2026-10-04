@@ -3,9 +3,12 @@ import json
 
 import pytest
 
-from repopilot.core.errors import ProviderResponseError
-from repopilot.core.models import Message
-from repopilot.llm.openai_compatible import OpenAICompatibleClient
+from repopilot.core.errors import ProviderHTTPError, ProviderResponseError
+from repopilot.core.models import LLMResponse, Message
+from repopilot.llm.openai_compatible import (
+    ExhaustionFallbackClient,
+    OpenAICompatibleClient,
+)
 
 
 def client_with(payload, captured):
@@ -48,3 +51,96 @@ def test_invalid_response_raises_stable_error() -> None:
     client = client_with({"unexpected": True}, {})
     with pytest.raises(ProviderResponseError):
         asyncio.run(client.generate([Message("user", "hi")]))
+
+
+class StubClient:
+    def __init__(self, outcomes):
+        self.outcomes = list(outcomes)
+        self.calls = 0
+
+    async def generate(self, messages, tools=None):
+        self.calls += 1
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+
+def test_credit_exhaustion_switches_permanently_to_fallback() -> None:
+    primary = StubClient([
+        ProviderHTTPError("provider HTTP 403: account balance is insufficient"),
+    ])
+    fallback = StubClient([LLMResponse(text="first"), LLMResponse(text="second")])
+    activations = []
+    client = ExhaustionFallbackClient(
+        primary, fallback, on_fallback=lambda: activations.append(True),
+    )
+
+    first = asyncio.run(client.generate([Message("user", "one")]))
+    second = asyncio.run(client.generate([Message("user", "two")]))
+
+    assert (first.text, second.text) == ("first", "second")
+    assert primary.calls == 1
+    assert fallback.calls == 2
+    assert activations == [True]
+
+
+def test_rate_limit_does_not_switch_provider() -> None:
+    error = ProviderHTTPError(
+        "provider HTTP 429: Request was rejected due to rate limiting; TPM limit reached",
+    )
+    primary = StubClient([error])
+    fallback = StubClient([LLMResponse(text="must not run")])
+    client = ExhaustionFallbackClient(primary, fallback, max_primary_attempts=1)
+
+    with pytest.raises(ProviderHTTPError, match="429"):
+        asyncio.run(client.generate([Message("user", "one")]))
+
+    assert not client.using_fallback
+    assert fallback.calls == 0
+
+
+def test_transient_rate_limit_retries_primary_without_fallback() -> None:
+    error = ProviderHTTPError(
+        "provider HTTP 429: System is too busy now",
+    )
+    primary = StubClient([error, LLMResponse(text="primary recovered")])
+    fallback = StubClient([LLMResponse(text="must not run")])
+    delays = []
+
+    async def no_sleep(delay):
+        delays.append(delay)
+
+    client = ExhaustionFallbackClient(
+        primary,
+        fallback,
+        initial_retry_seconds=2,
+        sleep=no_sleep,
+    )
+    result = asyncio.run(client.generate([Message("user", "one")]))
+
+    assert result.text == "primary recovered"
+    assert primary.calls == 2
+    assert fallback.calls == 0
+    assert delays == [2]
+
+
+def test_provider_timeout_retries_primary_without_fallback() -> None:
+    from repopilot.core.errors import ProviderTimeoutError
+
+    primary = StubClient([
+        ProviderTimeoutError("provider timed out after 60s"),
+        LLMResponse(text="primary recovered"),
+    ])
+    fallback = StubClient([LLMResponse(text="must not run")])
+    delays = []
+
+    async def no_sleep(delay):
+        delays.append(delay)
+
+    client = ExhaustionFallbackClient(primary, fallback, sleep=no_sleep)
+    result = asyncio.run(client.generate([Message("user", "one")]))
+
+    assert result.text == "primary recovered"
+    assert fallback.calls == 0
+    assert delays == [2]

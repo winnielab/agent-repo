@@ -351,6 +351,10 @@ async def solve_issue(
                 repository_evidence=repository_evidence,
             ))
             workers.append(worker_result)
+            # A worker can mutate the repository and then hit a model/tool/token
+            # limit. Persist the latest candidate before branching on status so
+            # partial work is never silently discarded during cleanup.
+            capture_workspace()
             if agent_result.success:
                 graph.mark_completed(record.id)
             else:
@@ -432,6 +436,7 @@ async def solve_issue(
                 repository_evidence,
             ))
             workers.append(worker_result)
+            capture_workspace()
             if not agent_result.success:
                 graph.mark_failed(repair_task.id, agent_result.error or agent_result.status)
                 break

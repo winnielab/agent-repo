@@ -37,6 +37,7 @@ class IssueSolveReport:
     event_log: str
     workspace: Optional[str]
     error: Optional[str] = None
+    orchestration: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return json_safe(self)  # type: ignore[return-value]
@@ -62,6 +63,8 @@ class IssueSolveReport:
             "", "## Issue", "", self.issue,
             "", "## Acceptance criteria", "",
         ]
+        if self.orchestration:
+            lines.insert(4, f"- Orchestration: `{self.orchestration.get('mode', 'unknown')}`")
         lines.extend(f"- {item['status'].upper()}: {item['criterion']} — {item['evidence']}"
                      for item in self.evaluation.get("criteria", []))
         if self.error:

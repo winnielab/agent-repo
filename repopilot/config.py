@@ -18,6 +18,8 @@ class RepoPilotConfig:
     max_explorer_iterations: int = 12
     max_explorer_tool_calls: int = 40
     max_explorer_tokens: int = 120_000
+    max_worker_tokens: int = 180_000
+    max_concurrency: int = 1
     execution_image: Optional[str] = None
     execution_platform: Optional[str] = None
     execution_setup_command: str = ""
@@ -48,6 +50,8 @@ class RepoPilotConfig:
             "max_explorer_iterations": self.max_explorer_iterations,
             "max_explorer_tool_calls": self.max_explorer_tool_calls,
             "max_explorer_tokens": self.max_explorer_tokens,
+            "max_worker_tokens": self.max_worker_tokens,
+            "max_concurrency": self.max_concurrency,
             "max_runtime_seconds": self.max_runtime_seconds,
             "command_timeout_seconds": self.command_timeout_seconds,
             "context_char_budget": self.context_char_budget,

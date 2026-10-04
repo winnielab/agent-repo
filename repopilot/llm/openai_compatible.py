@@ -6,9 +6,10 @@ import asyncio
 import json
 import os
 import socket
+import sys
 import urllib.error
 import urllib.request
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from repopilot.core.errors import (
     ProviderHTTPError,
@@ -18,6 +19,41 @@ from repopilot.core.errors import (
 from repopilot.core.models import LLMResponse, Message, ToolCall, Usage
 
 Transport = Callable[[str, Dict[str, str], bytes, float], bytes]
+FallbackCallback = Callable[[], None]
+RetryCallback = Callable[[int, float], None]
+SleepCallable = Callable[[float], Awaitable[None]]
+
+
+def _is_exhausted_credit_error(error: Exception) -> bool:
+    """Match durable account exhaustion, not transient rate/service limits."""
+    message = str(error).lower()
+    markers = (
+        "insufficient balance",
+        "balance is insufficient",
+        "balance insufficient",
+        "account balance",
+        "credits exhausted",
+        "credit exhausted",
+        "quota exhausted",
+        "quota has been exhausted",
+        "out of credits",
+        "余额不足",
+        "账户余额",
+    )
+    return any(marker in message for marker in markers)
+
+
+def _is_transient_provider_error(error: Exception) -> bool:
+    if isinstance(error, ProviderTimeoutError):
+        return True
+    message = str(error).lower()
+    return any(marker in message for marker in (
+        "provider http 429",
+        "provider http 503",
+        "provider http 504",
+        "system is too busy",
+        "service overloaded",
+    ))
 
 
 def _urllib_transport(url: str, headers: Dict[str, str], body: bytes, timeout: float) -> bytes:
@@ -155,13 +191,91 @@ class OpenAICompatibleClient:
         return self.parse_response(decoded)
 
 
-def deepseek_from_environment(model: str = "deepseek-chat") -> OpenAICompatibleClient:
+class ExhaustionFallbackClient:
+    """Permanently switch providers only after explicit credit exhaustion."""
+
+    def __init__(self, primary: OpenAICompatibleClient,
+                 fallback: OpenAICompatibleClient,
+                 on_fallback: Optional[FallbackCallback] = None,
+                 on_retry: Optional[RetryCallback] = None,
+                 max_primary_attempts: int = 6,
+                 initial_retry_seconds: float = 2.0,
+                 max_retry_seconds: float = 30.0,
+                 sleep: SleepCallable = asyncio.sleep) -> None:
+        if max_primary_attempts <= 0:
+            raise ValueError("max_primary_attempts must be positive")
+        self.primary = primary
+        self.fallback = fallback
+        self.on_fallback = on_fallback
+        self.on_retry = on_retry
+        self.max_primary_attempts = max_primary_attempts
+        self.initial_retry_seconds = initial_retry_seconds
+        self.max_retry_seconds = max_retry_seconds
+        self.sleep = sleep
+        self.using_fallback = False
+
+    async def generate(
+        self,
+        messages: List[Message],
+        tools: Optional[List[Dict[str, Any]]] = None,
+    ) -> LLMResponse:
+        if self.using_fallback:
+            return await self.fallback.generate(messages, tools)
+        for attempt in range(1, self.max_primary_attempts + 1):
+            try:
+                return await self.primary.generate(messages, tools)
+            except (ProviderHTTPError, ProviderTimeoutError) as exc:
+                if _is_exhausted_credit_error(exc):
+                    self.using_fallback = True
+                    if self.on_fallback is not None:
+                        self.on_fallback()
+                    return await self.fallback.generate(messages, tools)
+                if (not _is_transient_provider_error(exc)
+                        or attempt >= self.max_primary_attempts):
+                    raise
+                delay = min(
+                    self.max_retry_seconds,
+                    self.initial_retry_seconds * (2 ** (attempt - 1)),
+                )
+                if self.on_retry is not None:
+                    self.on_retry(attempt, delay)
+                await self.sleep(delay)
+        raise AssertionError("unreachable")
+
+
+def deepseek_from_environment(model: str = "deepseek-chat"):
     key = os.environ.get("DEEPSEEK_API_KEY", "")
     if not key:
         raise ValueError("DEEPSEEK_API_KEY is not set")
-    return OpenAICompatibleClient(
+    primary = OpenAICompatibleClient(
         api_key=key,
         model=model,
         base_url=os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
+        timeout=float(os.environ.get("DEEPSEEK_TIMEOUT_SECONDS", "60")),
     )
-
+    fallback_key = os.environ.get("DEEPSEEK_FALLBACK_API_KEY", "")
+    if not fallback_key:
+        return primary
+    fallback = OpenAICompatibleClient(
+        api_key=fallback_key,
+        model=os.environ.get("DEEPSEEK_FALLBACK_MODEL", "deepseek-chat"),
+        base_url=os.environ.get(
+            "DEEPSEEK_FALLBACK_BASE_URL", "https://api.deepseek.com",
+        ),
+        timeout=float(os.environ.get("DEEPSEEK_FALLBACK_TIMEOUT_SECONDS", "60")),
+    )
+    return ExhaustionFallbackClient(
+        primary,
+        fallback,
+        on_fallback=lambda: print(
+            "[provider] primary credits exhausted; switching permanently to fallback",
+            file=sys.stderr,
+            flush=True,
+        ),
+        on_retry=lambda attempt, delay: print(
+            f"[provider] primary temporarily unavailable; retry {attempt} "
+            f"in {delay:g}s",
+            file=sys.stderr,
+            flush=True,
+        ),
+    )
